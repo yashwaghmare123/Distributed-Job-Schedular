@@ -1,0 +1,22 @@
+export type Status = "QUEUED" | "SCHEDULED" | "CLAIMED" | "RUNNING" | "COMPLETED" | "FAILED" | "RETRY" | "DEAD_LETTER" | "CANCELLED";
+export type Project = { id: string; organizationId: string; name: string; description?: string | null; createdAt: string; updatedAt: string };
+export type Queue = { id: string; projectId: string; name: string; description?: string | null; defaultPriority: number; concurrencyLimit: number; isPaused: boolean; retryPolicyId: string; createdAt: string; updatedAt: string };
+export type RetryPolicy = { id: string; name: string; strategy: string; maxAttempts: number };
+export type Job = { id: string; queueId: string; batchId?: string | null; jobType: string; payload: unknown; status: Status; priority: number; scheduledAt: string; claimedBy?: string | null; claimedAt?: string | null; attemptCount: number; maxAttempts: number; idempotencyKey?: string | null; createdAt: string; updatedAt: string; queue?: Queue & { project?: Project }; startedAt?: string | null; completedAt?: string | null; durationMs?: number | null };
+export type Worker = { id: string; organizationId: string; name: string; status: "ONLINE" | "OFFLINE" | "DRAINING" | "STOPPED"; concurrency: number; currentJobCount: number; lastHeartbeatAt?: string | null; createdAt: string; updatedAt: string };
+export type Execution = { id: string; jobId: string; workerId: string; attemptNumber: number; status: string; startedAt?: string | null; completedAt?: string | null; durationMs?: number | null; errorMessage?: string | null; errorCode?: string | null };
+export type DlqEntry = {
+  id: string;
+  jobId: string;
+  reason: string;
+  errorMessage?: string | null;
+  attemptCount: number;
+  lastWorkerId?: string | null;
+  failedAt: string;
+  createdAt: string;
+  requeuedAt?: string | null;
+  job?: Job & { queue?: Queue & { project?: Project } };
+};
+export type ScheduledJob = { id: string; queueId: string; jobType: string; payload: unknown; cronExpression: string; nextRunAt: string; enabled: boolean; lastRunAt?: string | null; runCount?: number; status?: "Enabled" | "Disabled"; queue: { id: string; name: string; projectId: string } };
+export type ExecutionRow = Execution & { job: { id: string; jobType: string; queueId: string }; worker: { id: string; name: string } };
+export type SchedulerEvent = { type: string; eventId: string; occurredAt: string; organizationId: string; projectId?: string; queueId?: string; jobId?: string; workerId?: string; payload: { status?: string; previousStatus?: string; currentJobCount?: number; attemptCount?: number; errorCode?: string | null; errorMessage?: string | null } };
