@@ -73,7 +73,7 @@ export async function updateRuntimeMetrics() {
 export async function captureQueueDepthSnapshots() {
   await prisma.$executeRaw`
     INSERT INTO "QueueDepthSnapshot" ("id", "queueId", "projectId", "capturedAt", "queuedCount", "runningCount", "scheduledCount")
-    SELECT md5(q."id"::text || date_trunc('second', NOW())::text)::uuid, q."id", q."projectId", date_trunc('second', NOW()),
+    SELECT gen_random_uuid(), q."id", q."projectId", date_trunc('second', NOW()),
       COUNT(*) FILTER (WHERE j."status" IN ('QUEUED', 'CLAIMED', 'RETRY'))::int,
       COUNT(*) FILTER (WHERE j."status" = 'RUNNING')::int,
       COUNT(*) FILTER (WHERE j."status" = 'SCHEDULED')::int
@@ -85,6 +85,7 @@ export async function captureQueueDepthSnapshots() {
         AND previous."capturedAt" = date_trunc('second', NOW())
     )
     GROUP BY q."id", q."projectId"
+    ON CONFLICT ("queueId", "capturedAt") DO NOTHING
   `;
 
   await prisma.$executeRaw`

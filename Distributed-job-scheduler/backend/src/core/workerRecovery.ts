@@ -58,35 +58,33 @@ export class WorkerRecovery {
       throw new Error("currentJobCount must be a non-negative safe integer.");
     }
 
-    const result = await prisma.$transaction(async (tx) => {
-      const updatedWorkers = await tx.$queryRaw<Array<Worker>>`
-        UPDATE "Worker"
-        SET
-          "status" = 'ONLINE',
-          "currentJobCount" = ${currentJobCount},
-          "lastHeartbeatAt" = CURRENT_TIMESTAMP,
-          "updatedAt" = CURRENT_TIMESTAMP
-        WHERE "id" = ${workerId}::uuid
-          AND "status" = 'ONLINE'
-        RETURNING *
-      `;
-      const worker = updatedWorkers[0];
-      if (!worker) {
-        throw new WorkerNotFoundError(workerId);
-      }
+    const updatedWorkers = await prisma.$queryRaw<Array<Worker>>`
+      UPDATE "Worker"
+      SET
+        "status" = 'ONLINE',
+        "currentJobCount" = ${currentJobCount},
+        "lastHeartbeatAt" = CURRENT_TIMESTAMP,
+        "updatedAt" = CURRENT_TIMESTAMP
+      WHERE "id" = ${workerId}::uuid
+        AND "status" = 'ONLINE'
+      RETURNING *
+    `;
+    const worker = updatedWorkers[0];
+    if (!worker) {
+      throw new WorkerNotFoundError(workerId);
+    }
 
-      const heartbeats = await tx.$queryRaw<Array<WorkerHeartbeat>>`
-        INSERT INTO "WorkerHeartbeat" ("id", "workerId", "status", "currentJobCount", "recordedAt")
-        VALUES (${randomUUID()}::uuid, ${workerId}::uuid, 'ONLINE', ${currentJobCount}, CURRENT_TIMESTAMP)
-        RETURNING *
-      `;
-      const heartbeat = heartbeats[0];
-      if (!heartbeat) {
-        throw new Error("Worker heartbeat was not recorded.");
-      }
+    const heartbeats = await prisma.$queryRaw<Array<WorkerHeartbeat>>`
+      INSERT INTO "WorkerHeartbeat" ("id", "workerId", "status", "currentJobCount", "recordedAt")
+      VALUES (${randomUUID()}::uuid, ${workerId}::uuid, 'ONLINE', ${currentJobCount}, CURRENT_TIMESTAMP)
+      RETURNING *
+    `;
+    const heartbeat = heartbeats[0];
+    if (!heartbeat) {
+      throw new Error("Worker heartbeat was not recorded.");
+    }
 
-      return { worker, heartbeat };
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
+    const result = { worker, heartbeat };
     await publishWorkerEvent(workerId, "worker.heartbeat", { currentJobCount });
     return result;
   }
