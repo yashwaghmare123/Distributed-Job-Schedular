@@ -16,6 +16,31 @@ jobs:
     name: Backend CI
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: scheduler
+          POSTGRES_PASSWORD: scheduler_password
+          POSTGRES_DB: job_scheduler
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scheduler -d job_scheduler"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
       DATABASE_URL: postgresql://scheduler:scheduler_password@localhost:5432/job_scheduler?schema=public
       REDIS_URL: redis://localhost:6379
@@ -38,6 +63,10 @@ jobs:
       - name: Generate Prisma Client
         working-directory: Distributed-job-scheduler/backend
         run: npx prisma generate
+
+      - name: Apply database migrations
+        working-directory: Distributed-job-scheduler/backend
+        run: npx prisma migrate deploy
 
       - name: Type check backend
         working-directory: Distributed-job-scheduler/backend
