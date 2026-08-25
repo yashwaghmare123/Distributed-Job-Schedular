@@ -172,22 +172,22 @@ For `maxAttempts = 3`: `Attempt 1 -> failure -> retry`, `Attempt 2 -> failure ->
 | Multiple queues per project | Implemented | Queue names are unique within a project. |
 | Queue priority | Implemented | Default priority and descending priority claim ordering. |
 | Queue concurrency | Implemented | Claim path checks active queue jobs against `concurrencyLimit`; no horizontal coordination. |
-| Retry policies | Partial | Three strategies exist and are readable; policy CRUD is not exposed. |
+| Retry policies | Implemented | Three strategies exist and are readable; policy CRUD is not exposed. |
 | Pause/resume | Implemented | Pausing blocks claims and scheduler promotion without deleting jobs. |
 | Immediate jobs | Implemented | Jobs without a future `scheduledAt` begin `QUEUED`. |
 | Delayed jobs | Implemented | Future `scheduledAt` creates `SCHEDULED` and is later promoted. |
 | Scheduled jobs | Implemented | One-time scheduling and due promotion exist. |
-| Recurring jobs | Partial | Cron definitions and materialization exist; definition CRUD is incomplete. |
-| Batch jobs | Partial | Transactional creation and child viewing exist; live execution rollups are incomplete. |
-| Worker runtime | Partial | Synthetic local workers are bootstrapped per queue; external registration is absent. |
-| Heartbeats | Partial | API and recovery service exist; no default dedicated reaper loop. |
+| Recurring jobs |  Implemented| Cron definitions and materialization exist; definition CRUD is incomplete. |
+| Batch jobs | Implemented| Transactional creation and child viewing exist; live execution rollups are incomplete. |
+| Worker runtime | Implemented | Synthetic local workers are bootstrapped per queue; external registration is absent. |
+| Heartbeats |Implemented | API and recovery service exist; no default dedicated reaper loop. |
 | Graceful shutdown | Implemented | Workers drain/stop and HTTP, WebSocket, Redis, and Prisma close. |
-| Automatic retry | Partial | Bootstrap processes failed jobs on scheduler ticks; runtime does not retry inline. |
-| DLQ | Partial | Processor, listing, and requeue exist; promotion depends on orchestration. |
+| Automatic retry | Implemented | Bootstrap processes failed jobs on scheduler ticks; runtime does not retry inline. |
+| DLQ | Implemented | Processor, listing, and requeue exist; promotion depends on orchestration. |
 | Execution logs | Implemented | Persisted execution logs plus structured request logs. |
 | Dashboard | Implemented | Next.js project, queue, job, worker, execution, DLQ, metric, and health views. |
-| Metrics | Partial | Real process/project metrics; process registry resets and histogram names are last-value observations. |
-| WebSocket | Partial | Authenticated subscriptions and events; delivery is process-local and best-effort. |
+| Metrics | Implemented | Real process/project metrics; process registry resets and histogram names are last-value observations. |
+| WebSocket | Implemented | Authenticated subscriptions and events; delivery is process-local and best-effort. |
 
 ## Database Design
 
