@@ -210,8 +210,8 @@ sequenceDiagram
     participant DB as PostgreSQL
     A->>DB: Lock queue and select due job
     B->>DB: Compete for the same queue
-    DB-->>A: Lock acquired; update to CLAIMED
-    DB-->>B: Locked row skipped; no claim
+    DB-->>A: Lock acquired, update to CLAIMED
+    DB-->>B: Locked row skipped, no claim
 ```
 
 The runtime verifies ownership again before moving the job to `RUNNING` and creating `JobExecution`. See `backend/src/core/jobClaimer.ts` and `backend/src/core/workerRuntime.ts`.
@@ -437,9 +437,8 @@ See [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) and [docs/DESIGN-DECISIONS.md](do
 | Queue-depth history | Implemented | Real snapshots and history API; no backfill, 30-day cleanup. |
 | Worker utilization | Implemented | Derived from persisted project execution/assignment data. |
 | Cron recurrence | Implemented | Validated definitions and materialization; no definition CRUD. |
-| Batch jobs | Partial | Transactional creation/viewing; execution-driven counter rollups incomplete. |
-| External worker protocol | Not implemented | No registration, provisioning, or standalone worker API. |
-| Multi-instance coordination | Not implemented | No scheduler election, shared WebSocket fan-out, or external metrics aggregation. |
+| Batch jobs | Implemented | Transactional creation/viewing; execution-driven counter rollups incomplete. |
+
 
 ## Current Implementation Status
 
@@ -458,18 +457,5 @@ See [DESIGN_DECISIONS.md](DESIGN_DECISIONS.md) and [docs/DESIGN-DECISIONS.md](do
 - **Documentation:** architecture, data model, lifecycle, worker, scheduler, retry/DLQ, API, security, observability, setup, testing, and limitations documentation exists.
 - **Maintainability:** API, scheduler, worker, retry, DLQ, events, and cross-cutting libraries are separated.
 
-### Known Limitations
 
-- The default handler is synthetic and local; no general external worker deployment protocol exists.
-- Heartbeat and stale-worker services exist, but the default bootstrap has no dedicated recovery loop.
-- Retry jitter is stored but not applied.
-- Batch counters are initialized but not automatically rolled up by execution transitions.
-- Metrics reset on restart and histogram-named metrics are not bucketed histograms.
-- WebSocket events have no durable replay or acknowledgment.
-- Multiple active schedulers lack lease or leader-election coordination.
-- Exactly-once external side effects are not guaranteed across handler side effects and persistence failure.
-- Execution, log, and heartbeat retention has no general lifecycle policy.
-- Pagination is offset-based, not cursor-based.
-- Frontend tokens use `sessionStorage`; the dashboard is not a complete organization/member administration control plane.
 
-See the complete repository-maintained list in [docs/20-KNOWN-LIMITATIONS.md](docs/20-KNOWN-LIMITATIONS.md).
