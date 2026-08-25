@@ -91,6 +91,22 @@ const handlers: JobHandlerDefinition[] = [
 
 const handlerMap = new Map(handlers.map((definition) => [definition.type, definition]));
 
+const customHandler: JobHandler = async (job) => completed(job);
+
+export function registerJobHandler(type: string, handler: JobHandler): void {
+  handlerMap.set(type, {
+    type,
+    label: type,
+    description: "Project-registered executable job handler.",
+    payloadExample: {},
+    handler
+  });
+}
+
+export function registerCustomJobType(type: string): void {
+  registerJobHandler(type, customHandler);
+}
+
 export function getJobHandlerDefinitions() {
   return handlers.filter((definition) => !definition.internal).map(({ handler: _handler, ...definition }) => definition);
 }

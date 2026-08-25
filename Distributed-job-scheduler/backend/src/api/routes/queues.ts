@@ -23,9 +23,9 @@ function getValidJobTypes(): Set<string> {
   return new Set(getJobHandlerDefinitions().map((definition) => definition.type));
 }
 
-function validateJobType(jobType: string): void {
+async function validateJobType(projectId: string, jobType: string): Promise<void> {
   const validTypes = getValidJobTypes();
-  if (!validTypes.has(jobType)) {
+  if (!validTypes.has(jobType) && !(await prisma.projectJobType.findUnique({ where: { projectId_jobType: { projectId, jobType } }, select: { id: true } }))) {
     throw new HttpError(400, "UNSUPPORTED_JOB_TYPE", `Job type '${jobType}' is not registered. Supported types: ${Array.from(validTypes).sort().join(", ")}`);
   }
 }
@@ -374,7 +374,7 @@ router.post("/queues/:id/jobs", writeRateLimit, async (request, response, next) 
     if (!member) throw new HttpError(403, "FORBIDDEN", "You do not have access to this queue.");
 
     const body = parseRequest(jobCreateSchema, request.body, "Invalid job request");
-    validateJobType(body.jobType);
+    await validateJobType(queue.projectId, body.jobType);
     
     const idempotencyKey = Array.isArray(request.headers["idempotency-key"]) ? request.headers["idempotency-key"][0] : request.headers["idempotency-key"] ?? body.idempotencyKey;
     const scheduledAt = body.scheduledAt ? new Date(body.scheduledAt) : new Date();
@@ -433,7 +433,7 @@ router.post("/queues/:id/jobs/batch", batchRateLimit, async (request, response, 
     // Validate all job types before creating the batch
     const normalizedJobs = normalizeBatchJobs(body.jobs as Array<Record<string, unknown>>);
     for (const job of normalizedJobs) {
-      validateJobType(job.jobType);
+      await validateJobType(queue.projectId, job.jobType);
     }
     
     const batch = await createJobBatch(queueId, normalizedJobs);
@@ -492,7 +492,7 @@ router.post("/queues/:id/scheduled-jobs", writeRateLimit, async (request, respon
     if (!member) throw new HttpError(403, "FORBIDDEN", "You do not have access to this queue.");
 
     const body = parseRequest(scheduledJobCreateSchema, request.body, "Invalid recurring schedule request");
-    validateJobType(body.jobType);
+    await validateJobType(queue.projectId, body.jobType);
     
     const nextRunAt = body.nextRunAt ? new Date(body.nextRunAt) : new Date(Date.now() + 60_000);
     const scheduledJob = await scheduler.createScheduledJob({
@@ -523,7 +523,7 @@ router.patch("/scheduled-jobs/:id", writeRateLimit, async (request, response, ne
   try {
     const scheduledJob = await getAuthorizedScheduledJob(request);
     const body = parseRequest(scheduledJobUpdateSchema, request.body, "Invalid scheduled job request");
-    if (body.jobType !== undefined) validateJobType(body.jobType);
+    if (body.jobType !== undefined) await validateJobType(scheduledJob.queue.projectId, body.jobType);
     const nextRunAt = body.nextRunAt ? new Date(body.nextRunAt) : undefined;
     if (nextRunAt && Number.isNaN(nextRunAt.getTime())) throw new HttpError(400, "VALIDATION_ERROR", "nextRunAt must be a valid date.");
     if (body.cronExpression !== undefined) calculateNextRunAt(body.cronExpression, nextRunAt ?? scheduledJob.nextRunAt);

@@ -6,6 +6,7 @@ import { HttpError } from "../lib/errors.js";
 import { parseRequest, parseQueryPagination } from "../lib/validation.js";
 import { requireAuth } from "../middleware/auth.js";
 import { readRateLimit, writeRateLimit } from "../middleware/rateLimit.js";
+import { registerCustomJobType } from "../../core/jobHandlers.js";
 
 const router = Router();
 
@@ -14,6 +15,11 @@ router.use(requireAuth);
 const projectSchema = z.object({
   name: z.string().min(1).max(200),
   description: z.string().max(1000).optional().nullable()
+});
+
+const jobTypeSchema = z.object({
+  jobType: z.string().trim().min(1).max(200),
+  description: z.string().max(2000).optional().nullable()
 });
 
 async function requireProjectAdmin(projectId: string, userId: string) {
@@ -114,5 +120,78 @@ router.delete("/:id", writeRateLimit, async (request, response, next) => {
     next(error);
   }
 });
+
+router.get("/:projectId/job-types", readRateLimit, async (request, response, next) => {
+  try {
+    const projectId = parseRequest(z.string().uuid(), request.params.projectId, "Invalid project id");
+    const project = await requireProjectMember(projectId, request.user!.id);
+    const jobTypes = await prisma.projectJobType.findMany({ where: { projectId: project.id }, orderBy: { jobType: "asc" } });
+    response.json({ data: jobTypes });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/:projectId/job-types", writeRateLimit, async (request, response, next) => {
+  try {
+    const projectId = parseRequest(z.string().uuid(), request.params.projectId, "Invalid project id");
+    await requireProjectAdmin(projectId, request.user!.id);
+    const body = parseRequest(jobTypeSchema, request.body, "Invalid job type request");
+    const jobType = await prisma.projectJobType.create({ data: { projectId, jobType: body.jobType, description: body.description ?? null } });
+    registerCustomJobType(jobType.jobType);
+    response.status(201).json(jobType);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      next(new HttpError(409, "CONFLICT", "This job type is already registered in the project."));
+      return;
+    }
+    next(error);
+  }
+});
+
+router.patch("/:projectId/job-types/:jobTypeId", writeRateLimit, async (request, response, next) => {
+  try {
+    const projectId = parseRequest(z.string().uuid(), request.params.projectId, "Invalid project id");
+    const jobTypeId = parseRequest(z.string().uuid(), request.params.jobTypeId, "Invalid job type id");
+    await requireProjectAdmin(projectId, request.user!.id);
+    const body = parseRequest(jobTypeSchema.partial(), request.body, "Invalid job type update");
+    const current = await prisma.projectJobType.findUnique({ where: { id: jobTypeId } });
+    if (!current || current.projectId !== projectId) throw new HttpError(404, "NOT_FOUND", "Job type not found.");
+    const updated = await prisma.projectJobType.update({ where: { id: jobTypeId }, data: {
+      ...(body.jobType === undefined ? {} : { jobType: body.jobType }),
+      ...(body.description === undefined ? {} : { description: body.description })
+    } });
+    registerCustomJobType(updated.jobType);
+    response.json(updated);
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+      next(new HttpError(409, "CONFLICT", "This job type is already registered in the project."));
+      return;
+    }
+    next(error);
+  }
+});
+
+router.delete("/:projectId/job-types/:jobTypeId", writeRateLimit, async (request, response, next) => {
+  try {
+    const projectId = parseRequest(z.string().uuid(), request.params.projectId, "Invalid project id");
+    const jobTypeId = parseRequest(z.string().uuid(), request.params.jobTypeId, "Invalid job type id");
+    await requireProjectAdmin(projectId, request.user!.id);
+    const current = await prisma.projectJobType.findUnique({ where: { id: jobTypeId }, select: { projectId: true } });
+    if (!current || current.projectId !== projectId) throw new HttpError(404, "NOT_FOUND", "Job type not found.");
+    await prisma.projectJobType.delete({ where: { id: jobTypeId } });
+    response.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
+async function requireProjectMember(projectId: string, userId: string) {
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { id: true, organizationId: true } });
+  if (!project) throw new HttpError(404, "NOT_FOUND", "Project not found.");
+  const member = await prisma.organizationMember.findFirst({ where: { organizationId: project.organizationId, userId } });
+  if (!member) throw new HttpError(403, "FORBIDDEN", "You do not have access to this project.");
+  return project;
+}
 
 export default router;

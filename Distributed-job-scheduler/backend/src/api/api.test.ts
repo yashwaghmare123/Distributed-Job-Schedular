@@ -44,6 +44,10 @@ async function createFixture(): Promise<Fixture> {
   const queueResponse = await request(app).post(`/projects/${projectResponse.body.id}/queues`).set(auth(account)).send({ name: `step12-queue-${suffix}`, concurrencyLimit: 10, retryPolicyId: policy.id });
   assert.equal(queueResponse.status, 201);
   console.log("FIXTURE_QUEUE", queueResponse.status, queueResponse.body);
+  for (const jobType of ["scheduled-creation", "hourly-sync", "lifecycle", "idempotent", "batch-a", "batch-b"]) {
+    const jobTypeResponse = await request(app).post(`/projects/${projectResponse.body.id}/job-types`).set(auth(account)).send({ jobType, description: "API test fixture job type" });
+    assert.equal(jobTypeResponse.status, 201);
+  }
   const worker = await prisma.worker.create({ data: { organizationId: account.organizationId, name: `step12-worker-${suffix}`, status: WorkerStatus.ONLINE, concurrency: 2, currentJobCount: 0 } });
   return { ...account, other, projectId: projectResponse.body.id, queueId: queueResponse.body.id, workerId: worker.id };
 }
@@ -64,6 +68,8 @@ async function cleanupFixture(fixture: Fixture) {
   await prisma.job.deleteMany({ where: { id: { in: jobIds } } });
   await prisma.jobBatch.deleteMany({ where: { queueId: { in: queueIds } } });
   await prisma.scheduledJob.deleteMany({ where: { queueId: { in: queueIds } } });
+  await prisma.queueDepthSnapshot.deleteMany({ where: { queueId: { in: queueIds } } });
+  await prisma.projectJobType.deleteMany({ where: { projectId: { in: projectIds } } });
   await prisma.workerHeartbeat.deleteMany({ where: { workerId: { in: workerIds } } });
   await prisma.worker.deleteMany({ where: { id: { in: workerIds } } });
   await prisma.queue.deleteMany({ where: { id: { in: queueIds } } });
@@ -76,7 +82,25 @@ async function cleanupFixture(fixture: Fixture) {
 test("retry policies are backfilled when none are configured", async () => {
   const account = await register("Retry Policy Owner", `retry-policy-${Date.now()}@example.test`, "Retry-password", "198.51.100.120");
   try {
-    await prisma.retryPolicy.deleteMany({});
+    const projectRows = await prisma.project.findMany({ where: { organizationId: account.organizationId }, select: { id: true } });
+    const projectIds = projectRows.map((project) => project.id);
+    const queueRows = await prisma.queue.findMany({ where: { projectId: { in: projectIds } }, select: { id: true } });
+    const queueIds = queueRows.map((queue) => queue.id);
+
+    await prisma.jobLog.deleteMany({ where: { execution: { job: { queueId: { in: queueIds } } } } });
+    await prisma.jobExecution.deleteMany({ where: { job: { queueId: { in: queueIds } } } });
+    await prisma.deadLetterEntry.deleteMany({ where: { job: { queueId: { in: queueIds } } } });
+    await prisma.job.deleteMany({ where: { queueId: { in: queueIds } } });
+    await prisma.jobBatch.deleteMany({ where: { queueId: { in: queueIds } } });
+    await prisma.scheduledJob.deleteMany({ where: { queueId: { in: queueIds } } });
+    await prisma.queueDepthSnapshot.deleteMany({ where: { queueId: { in: queueIds } } });
+    await prisma.projectJobType.deleteMany({ where: { projectId: { in: projectIds } } });
+    await prisma.workerHeartbeat.deleteMany({ where: { worker: { organizationId: account.organizationId } } });
+    await prisma.worker.deleteMany({ where: { organizationId: account.organizationId } });
+    await prisma.queue.deleteMany({ where: { id: { in: queueIds } } });
+    await prisma.project.deleteMany({ where: { id: { in: projectIds } } });
+    await prisma.retryPolicy.deleteMany({ where: { queues: { none: {} } } });
+
     const response = await request(app).get("/retry-policies").set(auth(account));
     assert.equal(response.status, 200);
     assert.ok(response.body.data.length >= 3);
@@ -85,7 +109,7 @@ test("retry policies are backfilled when none are configured", async () => {
   } finally {
     await prisma.organizationMember.deleteMany({ where: { userId: account.userId } });
     await prisma.user.deleteMany({ where: { id: account.userId } });
-    await prisma.organization.deleteMany({ where: { name: "Retry Policy Owner's Organization" } });
+    await prisma.organization.deleteMany({ where: { id: account.organizationId } });
   }
 });
 

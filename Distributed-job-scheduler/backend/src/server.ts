@@ -10,7 +10,7 @@ import { RetryProcessor } from "./core/retryProcessor.js";
 import { DeadLetterProcessor } from "./core/deadLetterProcessor.js";
 import { redis } from "./lib/redis.js";
 import { captureQueueDepthSnapshots } from "./lib/metrics.js";
-import { registeredJobHandler } from "./core/jobHandlers.js";
+import { registerCustomJobType, registeredJobHandler } from "./core/jobHandlers.js";
 import { WorkerRecovery } from "./core/workerRecovery.js";
 
 export { createApp };
@@ -103,6 +103,11 @@ export async function startRuntimeBootstrap(options: RuntimeBootstrapOptions = {
   const schedulerTickPromises = new Set<Promise<void>>();
   let shutdownRequested = false;
   let shutdownPromise: Promise<void> | null = null;
+
+  const customJobTypes = await prisma.projectJobType.findMany({ select: { jobType: true } });
+  for (const { jobType } of customJobTypes) {
+    registerCustomJobType(jobType);
+  }
 
   const ensureRuntimeWorkers = async () => {
     const queues = await prisma.queue.findMany({ select: { id: true } });
