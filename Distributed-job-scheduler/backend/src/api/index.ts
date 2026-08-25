@@ -15,7 +15,7 @@ import { requireAuth } from "./middleware/auth.js";
 export function createApp() {
   const app = express();
   app.disable("x-powered-by");
-  app.use(cors());
+  app.use(cors({ origin: process.env.FRONTEND_ORIGIN ?? true, credentials: true }));
   app.use(helmet());
   app.use(express.json({ limit: "1mb" }));
 

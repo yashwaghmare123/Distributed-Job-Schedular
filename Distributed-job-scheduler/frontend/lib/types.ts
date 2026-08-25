@@ -11,7 +11,7 @@ export type RetryPolicy = {
   backoffMultiplier?: number | string | null;
   jitter?: boolean | null;
 };
-export type Job = { id: string; queueId: string; batchId?: string | null; jobType: string; payload: unknown; status: Status; priority: number; scheduledAt: string; claimedBy?: string | null; claimedAt?: string | null; attemptCount: number; maxAttempts: number; idempotencyKey?: string | null; createdAt: string; updatedAt: string; queue?: Queue & { project?: Project }; startedAt?: string | null; completedAt?: string | null; durationMs?: number | null };
+export type Job = { id: string; queueId: string; batchId?: string | null; jobType: string; payload: unknown; status: Status; priority: number; scheduledAt: string; claimedBy?: string | null; claimedAt?: string | null; attemptCount: number; maxAttempts: number; idempotencyKey?: string | null; createdAt: string; updatedAt: string; queue?: Queue & { project?: Project }; startedAt?: string | null; completedAt?: string | null; durationMs?: number | null; errorMessage?: string | null };
 export type WorkerJob = { id: string; jobType: string; queueId: string; status: "CLAIMED" | "RUNNING" };
 export type Worker = { id: string; organizationId: string; name: string; status: "ONLINE" | "OFFLINE" | "DRAINING" | "STOPPED"; concurrency: number; currentJobCount: number; currentJobs?: WorkerJob[]; lastJob?: Omit<WorkerJob, "status"> | null; lastHeartbeatAt?: string | null; createdAt: string; updatedAt: string };
 export type ExecutionLog = { id: string; executionId: string; level: string; message: string; metadata?: unknown; createdAt: string };

@@ -61,7 +61,10 @@ export default function HealthPage() {
     };
 
     void load();
-    return subscribeSocketStatus(setSocketStatus);
+    const unsubscribe = subscribeSocketStatus(setSocketStatus);
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   const socketLabel = socketStatus === "CONNECTED" ? "Connected" : socketStatus === "RECONNECTING" ? "Connecting" : "Disconnected";

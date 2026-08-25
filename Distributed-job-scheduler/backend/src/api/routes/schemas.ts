@@ -26,6 +26,18 @@ export const scheduledJobCreateSchema = z.object({
   enabled: z.boolean().optional()
 });
 
+export const scheduledJobUpdateSchema = scheduledJobCreateSchema.partial();
+
+export const retryPolicySchema = z.object({
+  name: z.string().min(1).max(200),
+  strategy: z.enum(["FIXED", "LINEAR", "EXPONENTIAL"]),
+  maxAttempts: z.number().int().min(1).max(50),
+  initialDelayMs: z.number().int().min(0).safe(),
+  maxDelayMs: z.number().int().min(0).safe(),
+  backoffMultiplier: z.number().positive(),
+  jitter: z.boolean().optional()
+});
+
 export const jobQueueSchema = z.object({
   name: z.string().min(1).max(200),
   description: z.string().max(1000).optional().nullable(),

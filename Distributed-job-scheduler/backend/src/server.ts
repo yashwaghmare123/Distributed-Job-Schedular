@@ -11,6 +11,7 @@ import { DeadLetterProcessor } from "./core/deadLetterProcessor.js";
 import { redis } from "./lib/redis.js";
 import { captureQueueDepthSnapshots } from "./lib/metrics.js";
 import { registeredJobHandler } from "./core/jobHandlers.js";
+import { WorkerRecovery } from "./core/workerRecovery.js";
 
 export { createApp };
 
@@ -93,6 +94,7 @@ export async function startRuntimeBootstrap(options: RuntimeBootstrapOptions = {
   const scheduler = new Scheduler();
   const retryProcessor = new RetryProcessor();
   const deadLetterProcessor = new DeadLetterProcessor();
+  const workerRecovery = new WorkerRecovery();
   const runtimeWorkers = new Map<string, WorkerRuntime>();
   const schedulerPollIntervalMs = options.schedulerPollIntervalMs ?? Number.parseInt(process.env.SCHEDULER_POLL_INTERVAL_MS ?? "5000", 10);
   const workerPollIntervalMs = options.workerPollIntervalMs ?? Number.parseInt(process.env.WORKER_POLL_INTERVAL_MS ?? "250", 10);
@@ -145,6 +147,7 @@ export async function startRuntimeBootstrap(options: RuntimeBootstrapOptions = {
       }
 
       try {
+        await workerRecovery.recoverStaleWorkers();
         await ensureRuntimeWorkers();
         const queues = await prisma.queue.findMany({ select: { id: true } });
         for (const queue of queues) {

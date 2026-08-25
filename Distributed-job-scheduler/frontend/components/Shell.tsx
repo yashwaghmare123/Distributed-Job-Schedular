@@ -16,7 +16,7 @@ import {
   Settings2,
   Users,
 } from "lucide-react";
-import { setAccessToken } from "@/lib/api";
+import { apiClient, setAccessToken } from "@/lib/api";
 import { useEffect, useState } from "react";
 import { connectSocket, disconnectSocket, subscribeSocket, subscribeSocketStatus, isSocketConnected, type SocketStatus } from "@/lib/socket";
 import { useSelectedProject } from "@/lib/projectContext";
@@ -46,10 +46,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const isControlPlane = !isProjectsPage && (isProjectEntry || Boolean(selectedProject));
 
   useEffect(() => {
-    if (!sessionStorage.getItem("scheduler.access")) {
-      router.replace("/login");
-      return;
-    }
+    let active = true;
+    void (apiClient.session?.() ?? Promise.reject(new Error("Authentication required."))).catch(() => { if (active) router.replace("/login"); });
     if (loading) return;
     if (!isProjectsPage && !selectedProject && !isProjectEntry) {
       router.replace("/projects");
@@ -59,15 +57,16 @@ export function Shell({ children }: { children: React.ReactNode }) {
     const unsubscribe = subscribeSocket(() => setOnline(isSocketConnected()));
     const timer = window.setInterval(() => setOnline(isSocketConnected()), 500);
     return () => {
+      active = false;
       unsubscribe();
       window.clearInterval(timer);
     };
   }, [isProjectEntry, isProjectsPage, router, selectedProject]);
 
   const logout = () => {
+    void (apiClient.logout?.() ?? Promise.resolve()).catch(() => undefined);
     disconnectSocket();
     setAccessToken(null);
-    sessionStorage.removeItem("scheduler.refresh");
     setSelectedProjectId(null);
     router.replace("/login");
   };
@@ -156,7 +155,9 @@ export function PageHeader({ eyebrow, title, detail, backHref, children }: { eye
   const [socketStatus, setSocketStatus] = useState<SocketStatus>("DISCONNECTED");
   useEffect(() => {
     const unsubscribe = subscribeSocketStatus(setSocketStatus);
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+    };
   }, []);
   const statusLabel = socketStatus === "CONNECTED" ? "Connected" : socketStatus === "RECONNECTING" ? "Reconnecting" : "Disconnected";
 

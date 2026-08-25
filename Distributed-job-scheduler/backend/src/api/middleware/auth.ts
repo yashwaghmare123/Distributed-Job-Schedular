@@ -25,7 +25,9 @@ export async function requireAuth(request: Request, _response: Response, next: N
   const authHeader = request.headers.authorization;
   const rawApiKey = request.headers["x-api-key"];
   const apiKey = Array.isArray(rawApiKey) ? rawApiKey[0] : rawApiKey;
-  if (!authHeader && !apiKey) {
+  const cookieHeader = request.headers.cookie ?? "";
+  const accessCookie = cookieHeader.split(";").map((part) => part.trim()).find((part) => part.startsWith("scheduler.access="))?.slice("scheduler.access=".length);
+  if (!authHeader && !apiKey && !accessCookie) {
     return next(new HttpError(401, "UNAUTHORIZED", "Authentication required."));
   }
 
@@ -50,11 +52,11 @@ export async function requireAuth(request: Request, _response: Response, next: N
     }
   }
 
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+  if (!authHeader?.startsWith("Bearer ") && !accessCookie) {
     return next(new HttpError(401, "UNAUTHORIZED", "Authentication required."));
   }
 
-  const token = authHeader.replace(/^Bearer\s+/i, "");
+  const token = authHeader?.startsWith("Bearer ") ? authHeader.replace(/^Bearer\s+/i, "") : decodeURIComponent(accessCookie!);
 
   try {
     const payload = verifyJwt(token);

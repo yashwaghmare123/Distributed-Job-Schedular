@@ -18,6 +18,7 @@ type LockedJob = {
   status: JobStatus;
   attemptCount: number;
   maxAttempts: number;
+  batchId: string | null;
   policyMaxAttempts: number;
 };
 
@@ -33,7 +34,7 @@ export class DeadLetterProcessor {
 
     const result = await prisma.$transaction(async (tx) => {
       const lockedRows = await tx.$queryRaw<LockedJob[]>`
-        SELECT "Job"."id", "Job"."queueId", "Job"."status", "Job"."attemptCount", "Job"."maxAttempts", "RetryPolicy"."maxAttempts" AS "policyMaxAttempts"
+        SELECT "Job"."id", "Job"."queueId", "Job"."batchId", "Job"."status", "Job"."attemptCount", "Job"."maxAttempts", "RetryPolicy"."maxAttempts" AS "policyMaxAttempts"
         FROM "Job"
         INNER JOIN "Queue" ON "Queue"."id" = "Job"."queueId"
         INNER JOIN "RetryPolicy" ON "RetryPolicy"."id" = "Queue"."retryPolicyId"
@@ -82,6 +83,13 @@ export class DeadLetterProcessor {
           AND "status" = 'FAILED'
           AND "attemptCount" >= ${maxAttempts}
       `;
+
+      if (job.batchId) {
+        await tx.jobBatch.updateMany({
+          where: { id: job.batchId, pendingJobs: { gt: 0 } },
+          data: { failedJobs: { increment: 1 }, pendingJobs: { decrement: 1 } }
+        });
+      }
 
       await this.beforeEntryCreate?.();
 

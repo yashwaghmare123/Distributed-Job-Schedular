@@ -8,10 +8,10 @@ import { requireAuth } from "../middleware/auth.js";
 import { createJobBatch, type JobBatchItem } from "../../core/jobBatchCreator.js";
 import { getJobHandlerDefinitions } from "../../core/jobHandlers.js";
 import { RetryProcessor } from "../../core/retryProcessor.js";
-import { Scheduler } from "../../core/scheduler.js";
+import { calculateNextRunAt, Scheduler } from "../../core/scheduler.js";
 import { WorkerRecovery } from "../../core/workerRecovery.js";
 import { publishJobStateEvent } from "../../events/eventBus.js";
-import { jobQueueSchema, jobCreateSchema, batchJobSchema, scheduledJobCreateSchema } from "./schemas.js";
+import { jobQueueSchema, jobCreateSchema, batchJobSchema, scheduledJobCreateSchema, scheduledJobUpdateSchema, retryPolicySchema } from "./schemas.js";
 import { batchRateLimit, readRateLimit, writeRateLimit } from "../middleware/rateLimit.js";
 
 const router = Router();
@@ -70,6 +70,55 @@ router.get("/retry-policies", readRateLimit, async (request, response, next) => 
   }
 });
 
+router.post("/retry-policies", writeRateLimit, async (request, response, next) => {
+  try {
+    const body = parseRequest(retryPolicySchema, request.body, "Invalid retry policy request");
+    const policy = await prisma.retryPolicy.create({ data: {
+      name: body.name,
+      strategy: body.strategy as RetryStrategy,
+      maxAttempts: body.maxAttempts,
+      initialDelayMs: body.initialDelayMs,
+      maxDelayMs: body.maxDelayMs,
+      backoffMultiplier: new Prisma.Decimal(body.backoffMultiplier),
+      jitter: body.jitter ?? false
+    } });
+    response.status(201).json(policy);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch("/retry-policies/:id", writeRateLimit, async (request, response, next) => {
+  try {
+    const id = asUuid(request.params.id, "id");
+    const body = parseRequest(retryPolicySchema.partial(), request.body, "Invalid retry policy request");
+    const policy = await prisma.retryPolicy.update({ where: { id }, data: {
+      ...(body.name === undefined ? {} : { name: body.name }),
+      ...(body.strategy === undefined ? {} : { strategy: body.strategy as RetryStrategy }),
+      ...(body.maxAttempts === undefined ? {} : { maxAttempts: body.maxAttempts }),
+      ...(body.initialDelayMs === undefined ? {} : { initialDelayMs: body.initialDelayMs }),
+      ...(body.maxDelayMs === undefined ? {} : { maxDelayMs: body.maxDelayMs }),
+      ...(body.backoffMultiplier === undefined ? {} : { backoffMultiplier: new Prisma.Decimal(body.backoffMultiplier) }),
+      ...(body.jitter === undefined ? {} : { jitter: body.jitter })
+    } });
+    response.json(policy);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete("/retry-policies/:id", writeRateLimit, async (request, response, next) => {
+  try {
+    const id = asUuid(request.params.id, "id");
+    const queuesUsingPolicy = await prisma.queue.count({ where: { retryPolicyId: id } });
+    if (queuesUsingPolicy > 0) throw new HttpError(409, "POLICY_IN_USE", "Retry policy is assigned to one or more queues.");
+    await prisma.retryPolicy.delete({ where: { id } });
+    response.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
 function asUuid(value: string | string[] | undefined, label: string): string {
   const raw = Array.isArray(value) ? value[0] : value;
   if (!raw) {
@@ -79,7 +128,7 @@ function asUuid(value: string | string[] | undefined, label: string): string {
   return parseRequest(z.string().uuid(), raw, `Invalid ${label}`);
 }
 
-async function getAuthorizedProjectId(request: { query: Record<string, unknown>; user?: { id: string } }): Promise<string | undefined> {
+async function getAuthorizedProjectId(request: { query: Record<string, unknown>; user: { id: string } }): Promise<string | undefined> {
   const rawProjectId = request.query.projectId;
   if (rawProjectId === undefined) return undefined;
   const projectId = asUuid(rawProjectId as string | string[] | undefined, "projectId");
@@ -400,7 +449,7 @@ router.post("/queues/:id/jobs/batch", batchRateLimit, async (request, response, 
 router.get("/jobs", readRateLimit, async (request, response, next) => {
   try {
     const query = parseQueryPagination(request.query as Record<string, unknown>);
-    const projectId = await getAuthorizedProjectId({ query: request.query as Record<string, unknown>, user: request.user });
+    const projectId = await getAuthorizedProjectId({ query: request.query as Record<string, unknown>, user: request.user! });
     const filters: Record<string, unknown> = {
       queue: { project: { organizationId: { in: request.user!.organizationIds } } }
     };
@@ -461,10 +510,50 @@ router.post("/queues/:id/scheduled-jobs", writeRateLimit, async (request, respon
   }
 });
 
+async function getAuthorizedScheduledJob(request: { params: { id?: string | string[] }; user?: { id: string } }) {
+  const id = asUuid(request.params.id, "id");
+  const scheduledJob = await prisma.scheduledJob.findUnique({ where: { id }, include: { queue: { include: { project: true } } } });
+  if (!scheduledJob) throw new HttpError(404, "NOT_FOUND", "Scheduled job not found.");
+  const member = await prisma.organizationMember.findFirst({ where: { organizationId: scheduledJob.queue.project.organizationId, userId: request.user!.id } });
+  if (!member) throw new HttpError(403, "FORBIDDEN", "You do not have access to this scheduled job.");
+  return scheduledJob;
+}
+
+router.patch("/scheduled-jobs/:id", writeRateLimit, async (request, response, next) => {
+  try {
+    const scheduledJob = await getAuthorizedScheduledJob(request);
+    const body = parseRequest(scheduledJobUpdateSchema, request.body, "Invalid scheduled job request");
+    if (body.jobType !== undefined) validateJobType(body.jobType);
+    const nextRunAt = body.nextRunAt ? new Date(body.nextRunAt) : undefined;
+    if (nextRunAt && Number.isNaN(nextRunAt.getTime())) throw new HttpError(400, "VALIDATION_ERROR", "nextRunAt must be a valid date.");
+    if (body.cronExpression !== undefined) calculateNextRunAt(body.cronExpression, nextRunAt ?? scheduledJob.nextRunAt);
+    const updated = await prisma.scheduledJob.update({ where: { id: scheduledJob.id }, data: {
+      ...(body.jobType === undefined ? {} : { jobType: body.jobType }),
+      ...(body.payload === undefined ? {} : { payload: body.payload }),
+      ...(body.cronExpression === undefined ? {} : { cronExpression: body.cronExpression }),
+      ...(nextRunAt ? { nextRunAt } : {}),
+      ...(body.enabled === undefined ? {} : { enabled: body.enabled })
+    } });
+    response.json(updated);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete("/scheduled-jobs/:id", writeRateLimit, async (request, response, next) => {
+  try {
+    const scheduledJob = await getAuthorizedScheduledJob(request);
+    await prisma.scheduledJob.delete({ where: { id: scheduledJob.id } });
+    response.status(204).send();
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get("/scheduled-jobs", readRateLimit, async (request, response, next) => {
   try {
     const query = parseQueryPagination(request.query as Record<string, unknown>);
-    const projectId = await getAuthorizedProjectId({ query: request.query as Record<string, unknown>, user: request.user });
+    const projectId = await getAuthorizedProjectId({ query: request.query as Record<string, unknown>, user: request.user! });
     const where = { queue: { project: { organizationId: { in: request.user!.organizationIds }, ...(projectId ? { id: projectId } : {}) } } };
     const [scheduledJobs, total] = await Promise.all([
       prisma.scheduledJob.findMany({
@@ -492,6 +581,7 @@ router.get("/scheduled-jobs", readRateLimit, async (request, response, next) => 
         const match = occurrence.idempotencyKey?.match(/^scheduler:([0-9a-f-]+):/i);
         if (!match) continue;
         const scheduleId = match[1];
+        if (!scheduleId) continue;
         const current = runSummaries.get(scheduleId) ?? { lastRunAt: null, runCount: 0 };
         current.runCount += 1;
         if (!current.lastRunAt || occurrence.scheduledAt > current.lastRunAt) {
@@ -518,7 +608,7 @@ router.get("/executions", readRateLimit, async (request, response, next) => {
   try {
     const query = parseQueryPagination(request.query as Record<string, unknown>);
     const raw = request.query as Record<string, unknown>;
-    const projectId = await getAuthorizedProjectId({ query: raw, user: request.user });
+    const projectId = await getAuthorizedProjectId({ query: raw, user: request.user! });
     const where: Record<string, unknown> = { job: { queue: { project: { organizationId: { in: request.user!.organizationIds } } } } };
     if (projectId) where.job = { queue: { project: { id: projectId, organizationId: { in: request.user!.organizationIds } } } };
     if (raw.jobId) where.jobId = raw.jobId;
@@ -715,7 +805,7 @@ router.post("/workers/:id/heartbeat", async (request, response, next) => {
 router.get("/dlq", readRateLimit, async (request, response, next) => {
   try {
     const query = parseQueryPagination(request.query as Record<string, unknown>);
-    const projectId = await getAuthorizedProjectId({ query: request.query as Record<string, unknown>, user: request.user });
+    const projectId = await getAuthorizedProjectId({ query: request.query as Record<string, unknown>, user: request.user! });
     const where = { job: { queue: { project: { organizationId: { in: request.user!.organizationIds }, ...(projectId ? { id: projectId } : {}) } } } };
     const [entries, total] = await Promise.all([
       prisma.deadLetterEntry.findMany({ where, orderBy: { failedAt: "desc" }, skip: (query.page - 1) * query.limit, take: query.limit, include: { job: { include: { queue: { include: { project: true, retryPolicy: true } } } } } }),

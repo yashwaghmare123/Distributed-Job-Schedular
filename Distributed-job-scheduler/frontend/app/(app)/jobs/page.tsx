@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
 import { apiClient, ApiError } from "@/lib/api";
 import type { Job } from "@/lib/types";
 import { Failure, Loading, PageHeader, StatusBadge } from "@/components/Shell";
@@ -10,7 +10,7 @@ import { useSelectedProject } from "@/lib/projectContext";
 
 const jobStatusOptions = ["QUEUED", "SCHEDULED", "CLAIMED", "RUNNING", "COMPLETED", "FAILED", "RETRY", "DEAD_LETTER", "CANCELLED"] as const;
 
-export default function JobsPage() {
+function JobsContent() {
   const searchParams = useSearchParams();
   const { selectedProject } = useSelectedProject();
   const batchId = searchParams.get("batchId");
@@ -40,7 +40,7 @@ export default function JobsPage() {
 
         const result = await apiClient.jobs(`?page=${page}&limit=25${status ? `&status=${status}` : ""}`, selectedProject?.id);
         setJobs(result.data);
-        setHasMore(result.pagination.hasMore);
+        setHasMore(result.pagination?.hasMore ?? false);
         setTotalPages(result.pagination?.totalPages ?? null);
       } catch (err) {
         setError(err instanceof ApiError ? err.message : "Unable to load jobs");
@@ -162,5 +162,13 @@ export default function JobsPage() {
         )}
       </section>
     </>
+  );
+}
+
+export default function JobsPage() {
+  return (
+    <Suspense fallback={<div className="panel empty">Loading jobs...</div>}>
+      <JobsContent />
+    </Suspense>
   );
 }

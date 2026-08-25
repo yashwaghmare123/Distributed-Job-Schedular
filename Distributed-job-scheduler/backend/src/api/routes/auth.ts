@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { Response } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma.js";
 import { hashPassword, signAccessToken, signRefreshToken, verifyJwt, verifyPassword } from "../lib/auth.js";
@@ -22,8 +23,14 @@ const loginSchema = z.object({
 });
 
 const refreshSchema = z.object({
-  refreshToken: z.string().min(1)
+  refreshToken: z.string().min(1).optional()
 });
+
+const cookieOptions = (maxAge: number) => ({ httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax" as const, path: "/", maxAge });
+function setAuthCookies(response: Response, accessToken: string, refreshToken: string) {
+  response.cookie("scheduler.access", accessToken, cookieOptions(15 * 60 * 1000));
+  response.cookie("scheduler.refresh", refreshToken, cookieOptions(7 * 24 * 60 * 60 * 1000));
+}
 
 router.post("/register", authRateLimit, async (request, response, next) => {
   try {
@@ -53,10 +60,13 @@ router.post("/register", authRateLimit, async (request, response, next) => {
       select: { organizationId: true }
     }).then((rows) => rows.map((row) => row.organizationId));
 
+    const accessToken = signAccessToken({ id: user.id, email: user.email, organizationIds: orgIds });
+    const refreshToken = signRefreshToken({ id: user.id, email: user.email, organizationIds: orgIds });
+    setAuthCookies(response, accessToken, refreshToken);
     response.status(201).json({
       user: { id: user.id, email: user.email, name: user.name },
-      accessToken: signAccessToken({ id: user.id, email: user.email, organizationIds: orgIds }),
-      refreshToken: signRefreshToken({ id: user.id, email: user.email, organizationIds: orgIds })
+      accessToken,
+      refreshToken
     });
   } catch (error) {
     next(error);
@@ -82,10 +92,13 @@ router.post("/login", authRateLimit, async (request, response, next) => {
       select: { organizationId: true }
     }).then((rows) => rows.map((row) => row.organizationId));
 
+    const accessToken = signAccessToken({ id: user.id, email: user.email, organizationIds: orgIds });
+    const refreshToken = signRefreshToken({ id: user.id, email: user.email, organizationIds: orgIds });
+    setAuthCookies(response, accessToken, refreshToken);
     response.json({
       user: { id: user.id, email: user.email, name: user.name },
-      accessToken: signAccessToken({ id: user.id, email: user.email, organizationIds: orgIds }),
-      refreshToken: signRefreshToken({ id: user.id, email: user.email, organizationIds: orgIds })
+      accessToken,
+      refreshToken
     });
   } catch (error) {
     next(error);
@@ -94,10 +107,13 @@ router.post("/login", authRateLimit, async (request, response, next) => {
 
 router.post("/refresh", authRateLimit, async (request, response, next) => {
   try {
-    const body = parseRequest(refreshSchema, request.body, "Invalid refresh request");
+    const body = parseRequest(refreshSchema, request.body ?? {}, "Invalid refresh request");
+    const cookieToken = request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith("scheduler.refresh="))?.slice("scheduler.refresh=".length);
+    const refreshToken = body.refreshToken ?? (cookieToken ? decodeURIComponent(cookieToken) : undefined);
+    if (!refreshToken) throw new HttpError(401, "UNAUTHORIZED", "Invalid refresh token.");
     let token;
     try {
-      token = verifyJwt(body.refreshToken);
+      token = verifyJwt(refreshToken);
     } catch {
       throw new HttpError(401, "UNAUTHORIZED", "Invalid refresh token.");
     }
@@ -115,13 +131,23 @@ router.post("/refresh", authRateLimit, async (request, response, next) => {
       select: { organizationId: true }
     }).then((rows) => rows.map((row) => row.organizationId));
 
-    response.json({
-      accessToken: signAccessToken({ id: user.id, email: user.email, organizationIds: orgIds }),
-      refreshToken: signRefreshToken({ id: user.id, email: user.email, organizationIds: orgIds })
-    });
+    const accessToken = signAccessToken({ id: user.id, email: user.email, organizationIds: orgIds });
+    const rotatedRefreshToken = signRefreshToken({ id: user.id, email: user.email, organizationIds: orgIds });
+    setAuthCookies(response, accessToken, rotatedRefreshToken);
+    response.json({ accessToken, refreshToken: rotatedRefreshToken });
   } catch (error) {
     next(error);
   }
+});
+
+router.post("/logout", (_request, response) => {
+  response.clearCookie("scheduler.access", { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", path: "/" });
+  response.clearCookie("scheduler.refresh", { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "lax", path: "/" });
+  response.status(204).send();
+});
+
+router.get("/session", requireAuth, async (request, response) => {
+  response.json({ user: request.user });
 });
 
 router.post("/api-keys", requireAuth, writeRateLimit, async (request, response, next) => {

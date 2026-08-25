@@ -51,7 +51,8 @@ export class WebSocketHub {
 
   private async accept(socket: WebSocket, request: IncomingMessage): Promise<void> {
     const url = new URL(request.url ?? "/", "http://localhost");
-    const rawToken = url.searchParams.get("token");
+    const cookieToken = request.headers.cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith("scheduler.access="))?.slice("scheduler.access=".length);
+    const rawToken = cookieToken ? decodeURIComponent(cookieToken) : url.searchParams.get("token");
     if (!rawToken) return this.reject(socket, "Authentication required.");
 
     let token;

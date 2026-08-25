@@ -41,22 +41,33 @@ services:
       context: ./backend
     container_name: job-scheduler-backend
     restart: unless-stopped
+
     environment:
       DATABASE_URL: postgresql://scheduler:scheduler_password@postgres:5432/job_scheduler?schema=public
       REDIS_URL: redis://redis:6379
       JWT_SECRET: dev-secret-change-me
-      PORT: 3000
+      PORT: 5000
+
     ports:
-      - "3000:3000"
+      - "5000:5000"
+
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+
     networks:
       - scheduler
+
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:5000/health').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"
+        ]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -66,18 +77,23 @@ services:
     build:
       context: ./frontend
       args:
-        NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
-        NEXT_PUBLIC_WS_URL: ws://localhost:3000/ws
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:5000
+        NEXT_PUBLIC_WS_URL: ws://localhost:5000/ws
+
     container_name: job-scheduler-frontend
     restart: unless-stopped
+
     environment:
-      NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
-      NEXT_PUBLIC_WS_URL: ws://localhost:3000/ws
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:5000
+      NEXT_PUBLIC_WS_URL: ws://localhost:5000/ws
+
     ports:
-      - "3001:3000"
+      - "3000:3000"
+
     depends_on:
       backend:
         condition: service_healthy
+
     networks:
       - scheduler
 

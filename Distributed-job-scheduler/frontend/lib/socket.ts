@@ -22,9 +22,9 @@ function setStatus(nextStatus: SocketStatus) {
 
 export function connectSocket() {
   if (typeof window === "undefined" || socket || status === "RECONNECTING") return;
-  const url = process.env.NEXT_PUBLIC_WS_URL; const token = sessionStorage.getItem("scheduler.access");
-  if (!url || !token) return;
-  setStatus("RECONNECTING"); const currentSocket = new WebSocket(`${url}?token=${encodeURIComponent(token)}`); socket = currentSocket;
+  const url = process.env.NEXT_PUBLIC_WS_URL;
+  if (!url) return;
+  setStatus("RECONNECTING"); const currentSocket = new WebSocket(url); socket = currentSocket;
   currentSocket.onopen = () => { if (socket !== currentSocket) return; setStatus("CONNECTED"); queueIds.forEach((queueId) => currentSocket.send(JSON.stringify({ type: "subscribe", queueId }))); jobIds.forEach((jobId) => currentSocket.send(JSON.stringify({ type: "subscribe", jobId }))); };
   currentSocket.onmessage = (message) => { if (socket !== currentSocket) return; try { const event = JSON.parse(message.data) as SchedulerEvent; if (!event.type || event.type === "ready" || event.type === "subscription.updated") return; eventHistory.unshift(event); eventHistory.splice(100); listeners.forEach((listener) => listener(event)); } catch { /* ignore malformed notifications */ } };
   currentSocket.onclose = () => { if (socket !== currentSocket) return; socket = null; setStatus("DISCONNECTED"); if (listeners.size && reconnectTimer === null) reconnectTimer = window.setTimeout(() => { reconnectTimer = null; connectSocket(); }, 1500); };

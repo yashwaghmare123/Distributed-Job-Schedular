@@ -30,16 +30,6 @@ export async function claimNextJob(workerId: string, queueId: string) {
         return null;
       }
 
-      const activeJobs = await tx.job.count({
-        where: {
-          queueId,
-          status: { in: [JobStatus.CLAIMED, JobStatus.RUNNING] }
-        }
-      });
-      if (activeJobs >= queue.concurrencyLimit) {
-        return null;
-      }
-
       const rows = await tx.$queryRaw<Array<ClaimedJobRow>>`
         SELECT
           "id",
@@ -57,6 +47,12 @@ export async function claimNextJob(workerId: string, queueId: string) {
             "scheduledAt" IS NULL
             OR "scheduledAt" <= CURRENT_TIMESTAMP
           )
+          AND (
+            SELECT COUNT(*)
+            FROM "Job" AS active
+            WHERE active."queueId" = "Job"."queueId"
+              AND active."status" IN ('CLAIMED', 'RUNNING')
+          ) < ${queue.concurrencyLimit}
         ORDER BY "priority" DESC, "createdAt" ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED

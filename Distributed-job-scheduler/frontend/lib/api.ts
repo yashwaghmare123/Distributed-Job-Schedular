@@ -5,13 +5,12 @@ if (!base) throw new Error("NEXT_PUBLIC_API_BASE_URL is required");
 
 export class ApiError extends Error { constructor(public status: number, message: string, public details?: Array<{ path?: string; message: string }>) { super(message); } }
 
-let accessToken: string | null = null;
 const inFlightRequests = new Map<string, Promise<unknown>>();
-export function setAccessToken(token: string | null) { accessToken = token; if (typeof window !== "undefined") { if (token) sessionStorage.setItem("scheduler.access", token); else sessionStorage.removeItem("scheduler.access"); } }
-export function getAccessToken() { if (accessToken) return accessToken; if (typeof window !== "undefined") accessToken = sessionStorage.getItem("scheduler.access"); return accessToken; }
+export function setAccessToken(_token: string | null) {}
+export function getAccessToken() { return null; }
 
 export async function apiText(path: string): Promise<string> {
-  const response = await fetch(`${base}${path}`, { headers: getAccessToken() ? { Authorization: `Bearer ${getAccessToken()}` } : {} });
+  const response = await fetch(`${base}${path}`, { credentials: "include" });
   const body = await response.text();
   if (!response.ok) throw new ApiError(response.status, body || "Request failed");
   return body;
@@ -27,8 +26,7 @@ function scopedQuery(query: string, projectId?: string | null) {
 async function request<T>(path: string, options: RequestInit, token: string | null): Promise<{ response: Response; body: T }> {
   const headers = new Headers(options.headers);
   headers.set("Content-Type", "application/json");
-  if (token) headers.set("Authorization", `Bearer ${token}`);
-  const response = await fetch(`${base}${path}`, { ...options, headers });
+  const response = await fetch(`${base}${path}`, { ...options, credentials: "include", headers });
   const body = await response.json().catch(() => ({})) as T;
   return { response, body };
 }
@@ -36,17 +34,12 @@ async function request<T>(path: string, options: RequestInit, token: string | nu
 async function requestApi<T>(path: string, options: RequestInit = {}): Promise<T> {
   let token = getAccessToken();
   let { response, body } = await request<T>(path, options, token);
-  const refreshToken = typeof window !== "undefined" ? sessionStorage.getItem("scheduler.refresh") : null;
-  if (response.status === 401 && refreshToken && path !== "/auth/login" && path !== "/auth/register" && path !== "/auth/refresh") {
-    const refreshResponse = await request<{ accessToken: string; refreshToken: string }>("/auth/refresh", { method: "POST", body: JSON.stringify({ refreshToken }) }, null);
+  if (response.status === 401 && path !== "/auth/login" && path !== "/auth/register" && path !== "/auth/refresh" && path !== "/auth/session") {
+    const refreshResponse = await request<{ accessToken: string; refreshToken: string }>("/auth/refresh", { method: "POST" }, null);
     if (refreshResponse.response.ok) {
-      token = refreshResponse.body.accessToken;
-      setAccessToken(token);
-      sessionStorage.setItem("scheduler.refresh", refreshResponse.body.refreshToken);
-      ({ response, body } = await request<T>(path, options, token));
+      ({ response, body } = await request<T>(path, options, null));
     } else {
       setAccessToken(null);
-      sessionStorage.removeItem("scheduler.refresh");
     }
   }
   const errorMessage = typeof body === "object" && body !== null && "error" in body && typeof body.error === "object" && body.error !== null && "message" in body.error && typeof body.error.message === "string" ? body.error.message : "Request failed";
@@ -92,6 +85,8 @@ async function fetchAllPages<T>(fetchPage: (query: string) => Promise<PageRespon
 export const apiClient = {
   health: () => api<{ status: string }>("/health"),
   readiness: () => api<{ status: string; error?: string; database?: string; redis?: string; websocket?: string }>("/ready"),
+  session: () => api<{ user: { id: string; email: string; organizationIds: string[] } }>("/auth/session"),
+  logout: () => api<void>("/auth/logout", { method: "POST" }),
   login: (body: { email: string; password: string }) => api<{ user: { id: string; email: string; name: string }; accessToken: string; refreshToken: string }>("/auth/login", { method: "POST", body: JSON.stringify(body) }),
   register: (body: { name: string; email: string; password: string }) => api<{ user: { id: string; email: string; name: string }; accessToken: string; refreshToken: string }>("/auth/register", { method: "POST", body: JSON.stringify(body) }),
   refresh: (refreshToken: string) => api<{ accessToken: string; refreshToken: string }>("/auth/refresh", { method: "POST", body: JSON.stringify({ refreshToken }) }),
@@ -106,6 +101,9 @@ export const apiClient = {
   queueDepthHistory: (projectId: string, queueId: string, hours = 24) => api<{ data: QueueDepthSnapshot[] }>(`/projects/${projectId}/queues/${queueId}/metrics/history?hours=${hours}`),
   workerUtilization: (projectId: string) => api<{ workers: WorkerUtilization[]; aggregateUtilization: number | null }>(`/projects/${projectId}/metrics/worker-utilization`),
   retryPolicies: () => api<{ data: RetryPolicy[] }>("/retry-policies"),
+  createRetryPolicy: (body: { name: string; strategy: string; maxAttempts: number; initialDelayMs: number; maxDelayMs: number; backoffMultiplier: number; jitter?: boolean }) => api<RetryPolicy>("/retry-policies", { method: "POST", body: JSON.stringify(body) }),
+  updateRetryPolicy: (id: string, body: Partial<{ name: string; strategy: string; maxAttempts: number; initialDelayMs: number; maxDelayMs: number; backoffMultiplier: number; jitter: boolean }>) => api<RetryPolicy>(`/retry-policies/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteRetryPolicy: (id: string) => api<void>(`/retry-policies/${id}`, { method: "DELETE" }),
   createQueue: (projectId: string, body: { name: string; description?: string; defaultPriority?: number; concurrencyLimit: number; isPaused?: boolean; retryPolicyId: string }) => api<Queue>(`/projects/${projectId}/queues`, { method: "POST", body: JSON.stringify(body) }),
   updateQueue: (id: string, body: Partial<Queue>) => api<Queue>(`/queues/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   jobs: (query = "", projectId?: string | null) => api<PageResponse<Job>>(`/jobs${scopedQuery(query, projectId)}`),
@@ -114,11 +112,12 @@ export const apiClient = {
   allScheduledJobs: (projectId?: string | null, query = "") => fetchAllPages((pageQuery) => api<PageResponse<ScheduledJob>>(`/scheduled-jobs${scopedQuery(pageQuery, projectId)}`), query),
   executionsList: (query = "", projectId?: string | null) => api<PageResponse<ExecutionRow>>(`/executions${scopedQuery(query, projectId)}`),
   allExecutions: (projectId?: string | null, query = "") => fetchAllPages((pageQuery) => api<PageResponse<ExecutionRow>>(`/executions${scopedQuery(pageQuery, projectId)}`), query),
-  allExecutions: (projectId?: string | null, query = "") => fetchAllPages((pageQuery) => api<PageResponse<ExecutionRow>>(`/executions${scopedQuery(pageQuery, projectId)}`), query),
   job: (id: string) => api<Job & { executions: Execution[]; deadLetterEntry?: DlqEntry | null }>(`/jobs/${id}`),
   executions: (id: string) => api<{ data: Execution[] }>(`/jobs/${id}/executions`),
   createJob: (queueId: string, body: Record<string, unknown>, idempotencyKey?: string) => api<Job>(`/queues/${queueId}/jobs`, { method: "POST", headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {}, body: JSON.stringify(body) }),
   createScheduledJob: (queueId: string, body: { jobType: string; payload: unknown; cronExpression: string; nextRunAt?: string; enabled?: boolean }) => api<ScheduledJob>(`/queues/${queueId}/scheduled-jobs`, { method: "POST", body: JSON.stringify(body) }),
+  updateScheduledJob: (id: string, body: Partial<{ jobType: string; payload: unknown; cronExpression: string; nextRunAt: string; enabled: boolean }>) => api<ScheduledJob>(`/scheduled-jobs/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+  deleteScheduledJob: (id: string) => api<void>(`/scheduled-jobs/${id}`, { method: "DELETE" }),
   createBatch: (queueId: string, jobs: unknown[]) => api<JobBatch>(`/queues/${queueId}/jobs/batch`, { method: "POST", body: JSON.stringify({ jobs }) }),
   batchJobs: (batchId: string, projectId?: string | null, query = "") => api<PageResponse<Job>>(`/jobs${scopedQuery(`?batchId=${encodeURIComponent(batchId)}${query ? `&${query.replace(/^\?/, "")}` : ""}`, projectId)}`),
   cancel: (id: string) => api<Job>(`/jobs/${id}/cancel`, { method: "POST" }),

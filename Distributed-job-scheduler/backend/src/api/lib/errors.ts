@@ -7,6 +7,8 @@ export type ApiErrorCode =
   | "FORBIDDEN"
   | "NOT_FOUND"
   | "CONFLICT"
+  | "UNSUPPORTED_JOB_TYPE"
+  | "POLICY_IN_USE"
   | "RATE_LIMITED"
   | "INTERNAL_ERROR";
 

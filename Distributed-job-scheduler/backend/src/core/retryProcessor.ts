@@ -130,7 +130,7 @@ export class RetryProcessor {
   }
 }
 
-export function calculateRetryDelay(policy: Pick<RetryPolicy, "strategy" | "initialDelayMs" | "maxDelayMs" | "backoffMultiplier"> , attemptCount: number): number {
+export function calculateRetryDelay(policy: Pick<RetryPolicy, "strategy" | "initialDelayMs" | "maxDelayMs" | "backoffMultiplier" | "jitter"> , attemptCount: number): number {
   if (attemptCount < 1) {
     throw new Error("attemptCount must be at least 1 to calculate retry backoff.");
   }
@@ -154,7 +154,11 @@ export function calculateRetryDelay(policy: Pick<RetryPolicy, "strategy" | "init
   }
 
   const cappedDelay = delay.lessThan(policy.maxDelayMs) ? delay : new Prisma.Decimal(policy.maxDelayMs);
-  const delayNumber = cappedDelay.toNumber();
+  const jitteredDelay = policy.jitter
+    ? cappedDelay.mul(new Prisma.Decimal(0.5 + Math.random()))
+    : cappedDelay;
+  const finalDelay = jitteredDelay.lessThan(policy.maxDelayMs) ? jitteredDelay : new Prisma.Decimal(policy.maxDelayMs);
+  const delayNumber = finalDelay.toNumber();
   if (!Number.isSafeInteger(delayNumber) || delayNumber < 0) {
     throw new Error("Retry delay must be a non-negative safe integer number of milliseconds.");
   }

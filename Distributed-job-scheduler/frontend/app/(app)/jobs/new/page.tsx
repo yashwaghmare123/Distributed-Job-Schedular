@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { apiClient } from "@/lib/api";
 import { subscribeQueue, subscribeSocketStatus, type SocketStatus } from "@/lib/socket";
@@ -32,7 +32,7 @@ const validateFutureDateTime = (label: string, rawValue: string) => {
   return null;
 };
 
-export default function NewJobPage() {
+function NewJobForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { selectedProject } = useSelectedProject();
@@ -190,4 +190,12 @@ export default function NewJobPage() {
       </form>
     </section>
   </>;
+}
+
+export default function NewJobPage() {
+  return (
+    <Suspense fallback={<div className="panel empty">Loading job form...</div>}>
+      <NewJobForm />
+    </Suspense>
+  );
 }
