@@ -35,6 +35,7 @@ const validateFutureDateTime = (label: string, rawValue: string) => {
 function NewJobForm() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const mode = searchParams.get("mode");
   const { selectedProject } = useSelectedProject();
   const [queues, setQueues] = useState<Queue[]>([]);
   const [handlers, setHandlers] = useState<JobHandlerOption[]>([]);
@@ -50,7 +51,6 @@ function NewJobForm() {
   const [delaySeconds, setDelaySeconds] = useState("60");
 
   useEffect(() => {
-    const mode = searchParams.get("mode");
     if (mode === "delayed" || mode === "scheduled" || mode === "recurring") {
       setExecutionType(mode);
     }
@@ -69,6 +69,9 @@ function NewJobForm() {
           apiClient.jobHandlers()
         ]);
         setQueues(availableQueues);
+        setSelectedQueueId((current) => current && availableQueues.some((queue) => queue.id === current)
+          ? current
+          : availableQueues[0]?.id ?? "");
         setHandlers(availableHandlers.data);
       } catch (err) {
         setError(err instanceof Error ? err.message : "Unable to load job capabilities");
@@ -76,7 +79,7 @@ function NewJobForm() {
     };
     void loadQueues();
     return () => { unsubscribeStatus(); };
-  }, [searchParams, selectedProject]);
+  }, [mode, selectedProject]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -175,7 +178,7 @@ function NewJobForm() {
       <form className="form-grid" onSubmit={submit}>
         {error && <Failure message={error} />}
         {message && <div className="status-pill">{message}</div>}
-        <div className="field"><label htmlFor="queueId">Queue</label><select id="queueId" name="queueId" required onChange={selectQueue} defaultValue=""><option value="">Select queue</option>{queues.map((queue) => <option key={queue.id} value={queue.id}>{queue.name}</option>)}</select>{selectedQueue?.retryPolicy && <p className="subtle">Retry policy: {selectedQueue.retryPolicy.name} · {selectedQueue.retryPolicy.maxAttempts} attempts · {selectedQueue.retryPolicy.strategy.toLowerCase()}</p>}</div>
+        <div className="field"><label htmlFor="queueId">Queue</label><select id="queueId" name="queueId" required value={selectedQueueId} onChange={selectQueue}><option value="">Select queue</option>{queues.map((queue) => <option key={queue.id} value={queue.id}>{queue.name}</option>)}</select>{selectedQueue?.retryPolicy && <p className="subtle">Retry policy: {selectedQueue.retryPolicy.name} · {selectedQueue.retryPolicy.maxAttempts} attempts · {selectedQueue.retryPolicy.strategy.toLowerCase()}</p>}</div>
         <div className="field"><label htmlFor="executionType">Execution type</label><select id="executionType" name="executionType" value={executionType} onChange={(event) => setExecutionType(event.target.value as "immediate" | "delayed" | "scheduled" | "recurring")}><option value="immediate">Immediate</option><option value="delayed">Delayed</option><option value="scheduled">Scheduled</option><option value="recurring">Recurring</option></select></div>
         {executionType === "delayed" && <div className="field"><label htmlFor="delaySeconds">Delay (seconds)</label><input id="delaySeconds" name="delaySeconds" type="number" min="1" step="1" value={delaySeconds} onChange={(event) => setDelaySeconds(event.target.value)} placeholder="60" required /></div>}
         {executionType === "scheduled" && <div className="field"><label htmlFor="scheduledAt">Run At</label><input id="scheduledAt" name="scheduledAt" type="datetime-local" value={scheduledAt} onChange={(event) => setScheduledAt(event.target.value)} placeholder="Select date and time" required /></div>}
