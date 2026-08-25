@@ -1,4 +1,4 @@
-# Intern Assignment: Distributed Job Scheduler
+# Distributed Job Scheduler
 
 Production-inspired distributed job scheduling platform for reliably executing asynchronous background jobs across multiple workers.
 
