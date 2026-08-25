@@ -18,6 +18,7 @@ type LockedJob = {
   status: JobStatus;
   attemptCount: number;
   maxAttempts: number;
+  policyMaxAttempts: number;
 };
 
 export class DeadLetterProcessor {
@@ -32,9 +33,11 @@ export class DeadLetterProcessor {
 
     const result = await prisma.$transaction(async (tx) => {
       const lockedRows = await tx.$queryRaw<LockedJob[]>`
-        SELECT "id", "queueId", "status", "attemptCount", "maxAttempts"
+        SELECT "Job"."id", "Job"."queueId", "Job"."status", "Job"."attemptCount", "Job"."maxAttempts", "RetryPolicy"."maxAttempts" AS "policyMaxAttempts"
         FROM "Job"
-        WHERE "id" = ${jobId}::uuid
+        INNER JOIN "Queue" ON "Queue"."id" = "Job"."queueId"
+        INNER JOIN "RetryPolicy" ON "RetryPolicy"."id" = "Queue"."retryPolicyId"
+        WHERE "Job"."id" = ${jobId}::uuid
         FOR UPDATE
       `;
       const job = lockedRows[0];
@@ -48,7 +51,8 @@ export class DeadLetterProcessor {
         return { processed: false, entry };
       }
 
-      if (job.status !== JobStatus.FAILED || job.attemptCount < job.maxAttempts) {
+      const maxAttempts = Math.min(job.maxAttempts, job.policyMaxAttempts);
+      if (job.status !== JobStatus.FAILED || job.attemptCount < maxAttempts) {
         return { processed: false, entry: null };
       }
 
@@ -63,8 +67,8 @@ export class DeadLetterProcessor {
       });
       const errorMessage = latestExecution?.errorMessage ?? null;
       const reason = errorMessage
-        ? `Maximum retry attempts (${job.maxAttempts}) exceeded: ${errorMessage}`
-        : `Maximum retry attempts (${job.maxAttempts}) exceeded`;
+        ? `Maximum retry attempts (${maxAttempts}) exceeded: ${errorMessage}`
+        : `Maximum retry attempts (${maxAttempts}) exceeded`;
       const databaseTime = await tx.$queryRaw<Array<{ now: Date }>>`SELECT CURRENT_TIMESTAMP AS now`;
       const failedAt = databaseTime[0]?.now;
       if (!failedAt) {
@@ -76,7 +80,7 @@ export class DeadLetterProcessor {
         SET "status" = 'DEAD_LETTER', "updatedAt" = CURRENT_TIMESTAMP
         WHERE "id" = ${jobId}::uuid
           AND "status" = 'FAILED'
-          AND "attemptCount" >= "maxAttempts"
+          AND "attemptCount" >= ${maxAttempts}
       `;
 
       await this.beforeEntryCreate?.();

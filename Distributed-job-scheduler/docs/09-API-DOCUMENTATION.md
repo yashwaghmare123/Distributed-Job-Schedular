@@ -19,6 +19,8 @@ Bearer syntax is `Authorization: Bearer <access-token>`. API routes also accept 
 |---|---|---|
 | GET | `/projects` | Projects in the user's memberships |
 | POST | `/projects` | Creates a project; OWNER/ADMIN only; body `name`, optional nullable `description` |
+| PATCH | `/projects/:id` | Updates an authorized project; OWNER/ADMIN only; body may include `name` and/or nullable `description` |
+| DELETE | `/projects/:id` | Deletes an authorized empty project; OWNER/ADMIN only; returns `409 CONFLICT` when queues or other restricted resources remain |
 | GET | `/projects/:projectId/queues` | Queues for an authorized project |
 | POST | `/projects/:projectId/queues` | Creates a queue; member access; body `name`, `description`, `defaultPriority`, `concurrencyLimit` 1-1000, `isPaused`, `retryPolicyId` |
 | PATCH | `/queues/:id` | Updates queue name, description, default priority, pause flag, concurrency limit, or retry policy |
@@ -51,11 +53,15 @@ Content-Type: application/json
 
 The response is the persisted job row. A duplicate idempotency request returns HTTP 200 with the existing row. Payload contents are accepted as JSON; envelope validation rejects invalid types, missing required fields, malformed UUIDs, bad dates, or out-of-range limits.
 
+Immediate jobs omit `scheduledAt`. Delayed and one-time scheduled jobs use the same endpoint with a future ISO `scheduledAt`; the scheduler makes them eligible when that timestamp arrives. Recurring jobs use `POST /queues/:id/scheduled-jobs` with `jobType`, `payload`, `cronExpression`, optional `nextRunAt`, and optional `enabled`; the response exposes the persisted recurring definition and its real `nextRunAt`.
+
 ## Scheduling, Executions, Workers, DLQ
 
 | Method | Endpoint | Purpose |
 |---|---|---|
 | GET | `/scheduled-jobs` | Paginated recurring definitions visible to the user's organizations |
+| GET | `/projects/:projectId/queues/:queueId/metrics/history` | Chronological persisted queue-depth snapshots for an authorized queue; collected immediately at runtime startup and on each existing scheduler tick; optional `hours` range from 1 to 720, default 24 |
+| GET | `/projects/:projectId/metrics/worker-utilization` | Utilization for workers with persisted project execution or assignment data, using project RUNNING executions and each worker's configured concurrency; attributed idle workers return 0%, while a project with no attribution has a null aggregate |
 | GET | `/executions` | Paginated execution history; filters `jobId`, `workerId`, `status` |
 | GET | `/workers` | Workers in the user's organizations |
 | GET | `/workers/:id/heartbeats` | Heartbeat history for an authorized worker |
@@ -70,7 +76,7 @@ There are no worker registration/status-management endpoints, retry-policy CRUD 
 | Method | Endpoint | Behavior |
 |---|---|---|
 | GET | `/health` | Static HTTP 200 `{status:"ok"}` |
-| GET | `/ready` | 200 when PostgreSQL and Redis checks pass; otherwise 503 with failure names |
+| GET | `/ready` | PostgreSQL, Redis, and WebSocket server readiness; returns component states and 503 when a configured dependency or WebSocket server is unavailable |
 | GET | `/metrics` | Prometheus-style text for the process-local metrics registry |
 
 Every request receives or propagates `X-Request-ID`; malformed input produces `400 VALIDATION_ERROR`, missing resources `404 NOT_FOUND`, authorization failures `403 FORBIDDEN`, invalid credentials `401 UNAUTHORIZED`, and state conflicts `409 CONFLICT` where applicable. Helmet, CORS, JSON body limit (1 MB), and Redis-backed rate limits are applied by the server.

@@ -1,67 +1,88 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Activity, BarChart3, Clock3, Gauge, RefreshCw, Server, Timer } from "lucide-react";
-import { apiClient, apiText } from "@/lib/api";
+import Link from "next/link";
+import { Activity, BarChart3, CalendarClock, Clock3, Gauge, RefreshCw, Server } from "lucide-react";
+import { apiClient } from "@/lib/api";
 import { subscribeSocket } from "@/lib/socket";
-import type { ExecutionRow, Job, ScheduledJob, Worker } from "@/lib/types";
+import { BarChart, LineChart, colors, type MetricPoint } from "@/components/MetricCharts";
+import { StatusBadge } from "@/components/Shell";
+import type { DlqEntry, ExecutionRow, Job, Queue, ScheduledJob, WorkerUtilization } from "@/lib/types";
 
-type MetricData = { executions: ExecutionRow[]; scheduled: ScheduledJob[]; dlqCount: number; text: string };
+type MetricData = { executions: ExecutionRow[]; dlq: DlqEntry[]; queues: Queue[]; scheduled: ScheduledJob[]; workers: WorkerUtilization[] };
 
-function prometheusValue(text: string, name: string) {
-  const match = text.match(new RegExp(`^${name}\\s+([0-9.]+)$`, "m"));
-  return match ? Number(match[1]) : null;
+type Props = { jobs: Job[]; events: number; projectId: string | null; refreshSignal?: number };
+
+function Panel({ title, icon, detail, children, className = "" }: { title: string; icon: React.ReactNode; detail?: string; children: React.ReactNode; className?: string }) {
+  return <section className={`panel overview-panel ${className}`}><div className="panel-head"><div><h3 className="panel-title">{title}</h3>{detail && <p className="metric-detail subtle">{detail}</p>}</div>{icon}</div>{children}</section>;
 }
 
-function BarChart({ values, colors = ["var(--cyan)"] }: { values: Array<{ label: string; value: number }>; colors?: string[] }) {
-  const maximum = Math.max(...values.map((item) => item.value), 1);
-  return <div style={{ display: "grid", gap: 12 }}>{values.map((item, index) => <div key={`${item.label}-${index}`} style={{ display: "grid", gridTemplateColumns: "86px minmax(0, 1fr) 42px", gap: 9, alignItems: "center", font: "12px ui-monospace, SFMono-Regular, Menlo, monospace" }}><span>{item.label}</span><div style={{ height: 9, background: "var(--ink)", border: "1px solid var(--line)" }}><i style={{ display: "block", height: "100%", width: `${item.value ? Math.max((item.value / maximum) * 100, 4) : 0}%`, background: colors[index % colors.length] }} /></div><b style={{ textAlign: "right" }}>{item.value.toLocaleString()}</b></div>)}</div>;
+function completedAndFailedByHour(executions: ExecutionRow[]) {
+  const buckets = new Map<string, { completed: number; failed: number }>();
+  executions.forEach((execution) => {
+    const timestamp = execution.completedAt ?? execution.startedAt;
+    if (!timestamp || !["COMPLETED", "FAILED"].includes(execution.status)) return;
+    const date = new Date(timestamp);
+    date.setMinutes(0, 0, 0);
+    const label = date.toISOString();
+    const bucket = buckets.get(label) ?? { completed: 0, failed: 0 };
+    if (execution.status === "COMPLETED") bucket.completed += 1;
+    if (execution.status === "FAILED") bucket.failed += 1;
+    buckets.set(label, bucket);
+  });
+  const labels = [...buckets.keys()].sort();
+  return [
+    { label: "Completed", color: colors[0], points: labels.map((label) => ({ label, value: buckets.get(label)!.completed })) },
+    { label: "Failed", color: "#be123c", points: labels.map((label) => ({ label, value: buckets.get(label)!.failed })) }
+  ];
 }
 
-function LineChart({ values }: { values: number[] }) {
-  if (!values.length) return <div className="empty">No completed timestamps available.</div>;
-  const maximum = Math.max(...values, 1);
-  const points = values.map((value, index) => `${(index / Math.max(values.length - 1, 1)) * 100},${100 - (value / maximum) * 84 - 8}`).join(" ");
-  return <svg style={{ display: "block", width: "100%", height: 150, background: "linear-gradient(to bottom, transparent 24%, var(--line) 25%, transparent 26%, transparent 49%, var(--line) 50%, transparent 51%, transparent 74%, var(--line) 75%, transparent 76%)" }} viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="Jobs processed over time"><polyline points={points} fill="none" stroke="var(--cyan)" strokeWidth="2" vectorEffect="non-scaling-stroke" /></svg>;
+function QueueStatus({ jobs }: { jobs: Job[] }) {
+  const statuses = ["QUEUED", "CLAIMED", "RUNNING", "RETRY", "SCHEDULED"] as const;
+  return <div className="summary-list">{statuses.map((status) => <div className="summary-row" key={status}><span>{status}</span><strong>{jobs.filter((job) => job.status === status).length.toLocaleString()}</strong></div>)}</div>;
 }
 
-function Panel({ title, icon, children, detail }: { title: string; icon: React.ReactNode; children: React.ReactNode; detail?: string }) {
-  return <section className="panel"><div className="panel-head"><h3 className="panel-title">{title}</h3>{icon}</div>{children}{detail && <p className="subtle" style={{ marginBottom: 0, lineHeight: 1.5 }}>{detail}</p>}</section>;
+function WorkerStatus({ workers }: { workers: WorkerUtilization[] }) {
+  if (!workers.length) return <div className="overview-empty">No project workers available.</div>;
+  return <div className="table-wrap"><table><thead><tr><th>Worker</th><th>Status</th><th>Running</th><th>Capacity</th><th>Utilization</th></tr></thead><tbody>{workers.map((worker) => <tr key={worker.workerId}><td>{worker.workerName}</td><td><StatusBadge status={worker.status} /></td><td>{worker.runningJobs}</td><td>{worker.concurrency}</td><td>{Math.round(worker.utilization)}%</td></tr>)}</tbody></table></div>;
 }
 
-export function OverviewMetrics({ jobs, workers, events }: { jobs: Job[]; workers: Worker[]; events: number }) {
+export function OverviewMetrics({ jobs, events, projectId, refreshSignal = 0 }: Props) {
   const [data, setData] = useState<MetricData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const refreshTimerRef = useRef<number | null>(null);
+  const activeProjectRef = useRef(projectId);
+  const requestIdRef = useRef(0);
   const load = async () => {
+    if (!projectId) return;
+    const requestId = ++requestIdRef.current;
     try {
-      const [executions, scheduled, dlq, text] = await Promise.all([apiClient.allExecutions(), apiClient.allScheduledJobs(), apiClient.dlq(), apiText("/metrics")]);
-      setData({ executions, scheduled, dlqCount: dlq.data.length, text });
+      const [executions, dlq, queues, scheduled, utilization] = await Promise.all([apiClient.allExecutions(projectId), apiClient.allDlq(projectId), apiClient.allQueues(projectId), apiClient.allScheduledJobs(projectId), apiClient.workerUtilization(projectId)]);
+      if (activeProjectRef.current !== projectId || requestId !== requestIdRef.current) return;
+      setData({ executions, dlq, queues, scheduled, workers: utilization.workers });
       setError(null);
-    } catch (err) { setError(err instanceof Error ? err.message : "Unable to load overview metrics"); }
+    } catch (err) { if (activeProjectRef.current === projectId && requestId === requestIdRef.current) setError(err instanceof Error ? err.message : "Unable to load project summary"); }
   };
-  useEffect(() => { void load(); const unsubscribe = subscribeSocket((event) => { if (event.type === "worker.heartbeat") return; if (refreshTimerRef.current !== null) return; refreshTimerRef.current = window.setTimeout(() => { refreshTimerRef.current = null; void load(); }, 10000); }); return () => { unsubscribe(); if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current); }; }, []);
+  useEffect(() => { activeProjectRef.current = projectId; requestIdRef.current += 1; setData(null); void load(); const interval = window.setInterval(() => void load(), 60000); const unsubscribe = subscribeSocket((event) => { if (event.projectId !== projectId || event.type === "worker.heartbeat" || refreshTimerRef.current !== null) return; refreshTimerRef.current = window.setTimeout(() => { refreshTimerRef.current = null; void load(); }, 10000); }); return () => { window.clearInterval(interval); unsubscribe(); if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current); }; }, [projectId, refreshSignal]);
   if (error && !data) return <div className="error">{error}</div>;
-  if (!data) return <div className="panel empty">Loading live metrics...</div>;
-  const completed = jobs.filter((job) => job.status === "COMPLETED").length;
-  const failed = jobs.filter((job) => job.status === "FAILED").length;
-  const queueDepth = prometheusValue(data.text, "queue_depth");
-  const retryCount = prometheusValue(data.text, "jobs_retried_total");
-  const processed = jobs.filter((job) => job.completedAt).sort((a, b) => new Date(a.completedAt!).getTime() - new Date(b.completedAt!).getTime()).map((_, index) => index + 1);
-  const durations = data.executions.filter((execution) => execution.durationMs !== null && execution.durationMs !== undefined).slice(-8);
-  const utilization = workers.map((worker) => ({ label: worker.name, value: worker.concurrency ? Math.round((worker.currentJobCount / worker.concurrency) * 100) : 0 }));
+  if (!data) return <div className="panel empty">Loading project summary...</div>;
+
+  const failedJobs = jobs.filter((job) => job.status === "FAILED");
+  const retryAttempts = data.executions.filter((execution) => execution.attemptNumber > 1).length;
+  const durationValues = data.executions.filter((execution) => execution.durationMs !== null && execution.durationMs !== undefined).map((execution) => execution.durationMs!);
+  const averageDuration = durationValues.length ? Math.round(durationValues.reduce((sum, value) => sum + value, 0) / durationValues.length) : null;
+  const upcoming = data.scheduled.filter((job) => job.enabled && job.nextRunAt).sort((left, right) => new Date(left.nextRunAt).getTime() - new Date(right.nextRunAt).getTime()).slice(0, 5);
+  const chartSeries = completedAndFailedByHour(data.executions);
+  const totalCompleted = data.executions.filter((execution) => execution.status === "COMPLETED").length;
+  const totalFailed = data.executions.filter((execution) => execution.status === "FAILED").length;
+
   return <>
     {error && <div className="error">{error}</div>}
-    <div className="grid content-grid" style={{ marginTop: 14 }}>
-      <Panel title="Jobs processed over time" icon={<Activity size={18} color="var(--cyan)" />} detail="Cumulative completed jobs from real completedAt timestamps."><LineChart values={processed} /></Panel>
-      <Panel title="Completed vs failed" icon={<BarChart3 size={18} color="var(--cyan)" />}><BarChart values={[{ label: "Completed", value: completed }, { label: "Failed", value: failed }]} colors={["var(--cyan)", "var(--red)"]} /></Panel>
-      <Panel title="Queue depth" icon={<Gauge size={18} color="var(--amber)" />} detail="Current backend gauge. Historical queue depth is not exposed."><strong style={{ display: "block", fontSize: 42, color: "var(--amber)", marginBottom: 8 }}>{queueDepth === null ? "Unavailable" : queueDepth.toLocaleString()}</strong><span className="subtle">queued, claimed, running, retrying, or scheduled</span></Panel>
-      <Panel title="Execution duration" icon={<Timer size={18} color="var(--blue)" />}><BarChart values={durations.map((execution) => ({ label: `Attempt ${execution.attemptNumber}`, value: execution.durationMs ?? 0 }))} colors={["var(--blue)"]} /></Panel>
-      <Panel title="Worker utilization" icon={<Server size={18} color="var(--cyan)" />} detail="Current jobs divided by declared worker concurrency."><BarChart values={utilization} /></Panel>
-      <Panel title="Retry count" icon={<RefreshCw size={18} color="var(--amber)" />} detail="Backend jobs_retried_total counter."><strong style={{ display: "block", fontSize: 42, color: "var(--amber)", marginBottom: 8 }}>{retryCount === null ? "Unavailable" : retryCount.toLocaleString()}</strong><span className="subtle">real retry events</span></Panel>
-      <Panel title="DLQ count" icon={<Clock3 size={18} color="var(--red)" />} detail="Current authenticated DLQ records."><strong style={{ display: "block", fontSize: 42, color: "var(--red)", marginBottom: 8 }}>{data.dlqCount.toLocaleString()}</strong><span className="subtle">dead-letter records</span></Panel>
-      <Panel title="Scheduled jobs" icon={<Activity size={18} color="var(--amber)" />}><BarChart values={[{ label: "Enabled", value: data.scheduled.filter((job) => job.enabled).length }, { label: "Disabled", value: data.scheduled.filter((job) => !job.enabled).length }]} colors={["var(--amber)", "var(--muted)"]} /></Panel>
-    </div>
-    <p className="subtle" style={{ textAlign: "right", marginTop: 12 }}>{events ? `Live event stream active · ${events} recent events` : "Waiting for real WebSocket events"}</p>
+    <div className="grid overview-kpis"><div className="stat"><span className="stat-label">Total jobs</span><strong className="stat-value">{jobs.length.toLocaleString()}</strong></div><div className="stat"><span className="stat-label">Completed</span><strong className="stat-value">{totalCompleted.toLocaleString()}</strong></div><div className="stat"><span className="stat-label">Failed</span><strong className="stat-value">{totalFailed.toLocaleString()}</strong></div><div className="stat"><span className="stat-label">Running</span><strong className="stat-value">{jobs.filter((job) => job.status === "RUNNING").length.toLocaleString()}</strong></div><div className="stat"><span className="stat-label">Queued</span><strong className="stat-value">{jobs.filter((job) => job.status === "QUEUED").length.toLocaleString()}</strong></div></div>
+    <div className="grid overview-charts"><Panel title="Jobs processed over time" icon={<Activity size={18} color="var(--cyan)" />} detail="Completed and failed executions from the selected project."><LineChart title="Jobs processed over time" xLabel="Time" yLabel="Jobs" series={chartSeries} emptyMessage="No historical execution data available yet." /><div className="metric-legend"><span className="metric-legend-item"><i style={{ background: colors[0] }} />Completed</span><span className="metric-legend-item"><i style={{ background: "#be123c" }} />Failed</span></div></Panel><Panel title="Completed vs Failed" icon={<BarChart3 size={18} color="var(--cyan)" />} detail="Execution outcomes for this project."><BarChart title="Completed versus failed executions" xLabel="Outcome" yLabel="Executions" values={[{ label: "Completed", value: totalCompleted }, { label: "Failed", value: totalFailed }]} colors={[colors[0], "#be123c"]} /></Panel></div>
+    <div className="grid overview-info-grid"><Panel title="Queue status" icon={<Gauge size={18} color="var(--amber)" />} detail="Current jobs by lifecycle state."><QueueStatus jobs={jobs} /></Panel><Panel title="Workers" icon={<Server size={18} color="var(--cyan)" />} detail="Project-attributed worker capacity and activity."><WorkerStatus workers={data.workers} /></Panel></div>
+    <Panel title="Recent jobs" icon={<Clock3 size={18} color="var(--blue)" />} detail="Latest project jobs with persisted execution duration."><div className="table-wrap"><table><thead><tr><th>Job</th><th>Status</th><th>Queue</th><th>Attempts</th><th>Created</th><th>Duration</th></tr></thead><tbody>{jobs.slice(0, 10).map((job) => <tr key={job.id}><td><Link className="mono link" href={`/project/${projectId}/jobs/${job.id}`}>{job.jobType}</Link></td><td><StatusBadge status={job.status} /></td><td>{job.queue?.name ?? "-"}</td><td>{job.attemptCount} / {job.maxAttempts}</td><td>{new Date(job.createdAt).toLocaleString()}</td><td>{job.durationMs === null || job.durationMs === undefined ? "-" : `${job.durationMs} ms`}</td></tr>)}</tbody></table></div>{!jobs.length && <div className="overview-empty">No recent jobs.</div>}{averageDuration !== null && <p className="metric-summary">Average execution: <strong>{averageDuration} ms</strong></p>}</Panel>
+    <div className="grid overview-bottom-grid"><Panel title="Recent failures" icon={<RefreshCw size={18} color="var(--red)" />} detail="Failed jobs from the selected project.">{failedJobs.length ? <div className="table-wrap"><table><thead><tr><th>Job</th><th>Error</th><th>Attempts</th><th>Failed at</th><th>Action</th></tr></thead><tbody>{failedJobs.slice(0, 5).map((job) => <tr key={job.id}><td>{job.jobType}</td><td>{job.errorMessage ?? "Execution failed"}</td><td>{job.attemptCount} / {job.maxAttempts}</td><td>{new Date(job.updatedAt).toLocaleString()}</td><td><Link className="link" href={`/project/${projectId}/jobs/${job.id}`}>View</Link></td></tr>)}</tbody></table></div> : <div className="overview-empty">No recent failures.</div>}</Panel><Panel title="Upcoming scheduled jobs" icon={<CalendarClock size={18} color="var(--amber)" />} detail="Enabled schedules ordered by their real nextRunAt.">{upcoming.length ? <div className="summary-list">{upcoming.map((job) => <div className="summary-row schedule-row" key={job.id}><span><strong>{job.jobType}</strong><small>{job.queue.name}</small></span><time>{new Date(job.nextRunAt).toLocaleString()}</time></div>)}</div> : <div className="overview-empty">No upcoming scheduled jobs.</div>}</Panel><Panel title="Operational totals" icon={<BarChart3 size={18} color="var(--blue)" />} detail="Current real project records."><div className="summary-list"><div className="summary-row"><span>Retry attempts</span><strong>{retryAttempts.toLocaleString()}</strong></div><div className="summary-row"><span>Dead letter queue</span><strong>{data.dlq.length.toLocaleString()}</strong></div><div className="summary-row"><span>Scheduled jobs</span><strong>{data.scheduled.length.toLocaleString()}</strong></div></div><div className="overview-links"><Link className="link" href={`/project/${projectId}/dlq`}>View DLQ</Link><Link className="link" href={`/project/${projectId}/executions`}>View executions</Link></div></Panel></div>
+    <p className="subtle overview-live">{events ? `${events} recent project events · summary refreshes from backend` : "Waiting for project activity"}</p>
   </>;
 }

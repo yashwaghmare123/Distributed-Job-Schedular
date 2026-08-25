@@ -5,8 +5,10 @@ import { apiClient } from "@/lib/api";
 import type { ExecutionRow } from "@/lib/types";
 import { Failure, Loading, PageHeader, StatusBadge } from "@/components/Shell";
 import { Pagination } from "@/components/Pagination";
+import { useSelectedProject } from "@/lib/projectContext";
 
 export default function ExecutionsPage() {
+  const { selectedProject } = useSelectedProject();
   const [items, setItems] = useState<ExecutionRow[]>([]);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
@@ -16,7 +18,7 @@ export default function ExecutionsPage() {
   useEffect(() => {
     setLoading(true);
     apiClient
-      .executionsList(`?page=${page}&limit=25`)
+      .executionsList(`?page=${page}&limit=25`, selectedProject?.id)
       .then((result) => { setItems(result.data); setHasMore(result.pagination?.hasMore ?? false); setTotalPages(result.pagination?.totalPages ?? null); })
       .catch((err) =>
         setError(
@@ -24,7 +26,7 @@ export default function ExecutionsPage() {
         ),
       )
       .finally(() => setLoading(false));
-  }, [page]);
+  }, [page, selectedProject?.id]);
   return (
     <>
       <PageHeader
@@ -55,9 +57,6 @@ export default function ExecutionsPage() {
                   <tr key={item.id}>
                     <td>
                       {item.job.jobType}
-                      <div className="subtle mono">
-                        {item.job.id.slice(0, 8)}
-                      </div>
                     </td>
                     <td>{item.attemptNumber}</td>
                     <td>

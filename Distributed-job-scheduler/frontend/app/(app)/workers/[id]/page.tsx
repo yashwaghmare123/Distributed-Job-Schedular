@@ -14,8 +14,20 @@ export default function WorkerDetailPage() {
   const [worker, setWorker] = useState<Worker | null>(null);
   const [heartbeats, setHeartbeats] = useState<Heartbeat[]>([]);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { Promise.all([apiClient.workers(), apiClient.heartbeats(id)]).then(([workers, history]) => { const match = workers.data.find((item) => item.id === id); if (!match) throw new Error("Worker not found"); setWorker(match); setHeartbeats(history.data as Heartbeat[]); }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load worker")); }, [id]);
+  useEffect(() => {
+    let active = true;
+    const load = () => Promise.all([apiClient.workers("?limit=100"), apiClient.heartbeats(id)]).then(([workers, history]) => {
+      const match = workers.data.find((item) => item.id === id);
+      if (!match) throw new Error("Worker not found");
+      if (!active) return;
+      setWorker(match);
+      setHeartbeats(history.data as Heartbeat[]);
+    }).catch((err) => { if (active) setError(err instanceof Error ? err.message : "Unable to load worker"); });
+    void load();
+    const refresh = window.setInterval(load, 2000);
+    return () => { active = false; window.clearInterval(refresh); };
+  }, [id]);
   if (error) return <><PageHeader eyebrow="Operations / worker detail" title="Unavailable" /><Failure message={error} /></>;
   if (!worker) return <><PageHeader eyebrow="Operations / worker detail" title="Loading worker" /><Loading /></>;
-  return <><PageHeader eyebrow="Operations / worker detail" title={worker.name} detail={worker.id}><Link className="button secondary" href="/workers">Back to workers</Link><StatusBadge status={worker.status} /></PageHeader><div className="grid content-grid"><section className="panel"><h3 className="panel-title">Worker capacity</h3><div className="feed-item"><strong>Organization</strong><span>{worker.organizationId}</span></div><div className="feed-item"><strong>Current jobs</strong><span>{worker.currentJobCount}</span></div><div className="feed-item"><strong>Concurrency</strong><span>{worker.concurrency}</span></div><div className="feed-item"><strong>Last heartbeat</strong><span>{worker.lastHeartbeatAt ? new Date(worker.lastHeartbeatAt).toLocaleString() : "Never"}</span></div></section><section className="panel"><h3 className="panel-title">Heartbeat history</h3>{heartbeats.length ? heartbeats.slice(0, 10).map((heartbeat) => <div className="feed-item" key={heartbeat.id}><strong>{heartbeat.status}</strong><span>{heartbeat.currentJobCount} jobs · {new Date(heartbeat.recordedAt).toLocaleString()}</span></div>) : <div className="empty">No heartbeat records found.</div>}</section></div></>;
+  return <><PageHeader eyebrow="Operations / worker detail" title={worker.name} detail={worker.id}><Link className="button secondary" href="/workers">Back to workers</Link><StatusBadge status={worker.status} /></PageHeader><div className="grid content-grid"><section className="panel"><h3 className="panel-title">Worker capacity</h3><div className="feed-item"><strong>Organization</strong><span>{worker.organizationId}</span></div><div className="feed-item"><strong>Current jobs</strong><span>{worker.currentJobCount}</span></div><div className="feed-item"><strong>Working on</strong><span>{worker.currentJobs?.length ? worker.currentJobs.map((job) => <span key={job.id} style={{ display: "block" }}><Link href={`/jobs/${job.id}`}>{job.jobType}</Link></span>) : "No active job"}</span></div><div className="feed-item"><strong>Last job</strong><span>{worker.lastJob ? <Link href={`/jobs/${worker.lastJob.id}`}>{worker.lastJob.jobType}</Link> : "No jobs processed"}</span></div><div className="feed-item"><strong>Concurrency</strong><span>{worker.concurrency}</span></div><div className="feed-item"><strong>Last heartbeat</strong><span>{worker.lastHeartbeatAt ? new Date(worker.lastHeartbeatAt).toLocaleString() : "Never"}</span></div></section><section className="panel"><h3 className="panel-title">Heartbeat history</h3>{heartbeats.length ? heartbeats.slice(0, 10).map((heartbeat) => <div className="feed-item" key={heartbeat.id}><strong>{heartbeat.status}</strong><span>{heartbeat.currentJobCount} jobs · {new Date(heartbeat.recordedAt).toLocaleString()}</span></div>) : <div className="empty">No heartbeat records found.</div>}</section></div></>;
 }

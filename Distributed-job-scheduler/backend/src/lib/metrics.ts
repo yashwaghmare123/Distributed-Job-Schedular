@@ -70,6 +70,29 @@ export async function updateRuntimeMetrics() {
   }
 }
 
+export async function captureQueueDepthSnapshots() {
+  await prisma.$executeRaw`
+    INSERT INTO "QueueDepthSnapshot" ("id", "queueId", "projectId", "capturedAt", "queuedCount", "runningCount", "scheduledCount")
+    SELECT md5(q."id"::text || date_trunc('second', NOW())::text)::uuid, q."id", q."projectId", date_trunc('second', NOW()),
+      COUNT(*) FILTER (WHERE j."status" IN ('QUEUED', 'CLAIMED', 'RETRY'))::int,
+      COUNT(*) FILTER (WHERE j."status" = 'RUNNING')::int,
+      COUNT(*) FILTER (WHERE j."status" = 'SCHEDULED')::int
+    FROM "Queue" q
+    LEFT JOIN "Job" j ON j."queueId" = q."id"
+    WHERE NOT EXISTS (
+      SELECT 1 FROM "QueueDepthSnapshot" previous
+      WHERE previous."queueId" = q."id"
+        AND previous."capturedAt" = date_trunc('second', NOW())
+    )
+    GROUP BY q."id", q."projectId"
+  `;
+
+  await prisma.$executeRaw`
+    DELETE FROM "QueueDepthSnapshot"
+    WHERE "capturedAt" < NOW() - INTERVAL '30 days'
+  `;
+}
+
 export function requestCorrelationMiddleware() {
   return async function (_request: any, response: any, next: any) {
     const requestId = randomUUID();

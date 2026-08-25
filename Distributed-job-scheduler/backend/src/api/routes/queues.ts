@@ -50,7 +50,7 @@ router.get("/retry-policies", readRateLimit, async (request, response, next) => 
     await ensureDefaultRetryPolicies();
     const policies = await prisma.retryPolicy.findMany({
       orderBy: [{ name: "asc" }],
-      select: { id: true, name: true, strategy: true, maxAttempts: true }
+      select: { id: true, name: true, strategy: true, maxAttempts: true, initialDelayMs: true, maxDelayMs: true, backoffMultiplier: true, jitter: true }
     });
     response.json({ data: policies });
   } catch (error) {
@@ -65,6 +65,17 @@ function asUuid(value: string | string[] | undefined, label: string): string {
   }
 
   return parseRequest(z.string().uuid(), raw, `Invalid ${label}`);
+}
+
+async function getAuthorizedProjectId(request: { query: Record<string, unknown>; user?: { id: string } }): Promise<string | undefined> {
+  const rawProjectId = request.query.projectId;
+  if (rawProjectId === undefined) return undefined;
+  const projectId = asUuid(rawProjectId as string | string[] | undefined, "projectId");
+  const project = await prisma.project.findUnique({ where: { id: projectId }, select: { organizationId: true } });
+  if (!project) throw new HttpError(404, "NOT_FOUND", "Project not found.");
+  const member = await prisma.organizationMember.findFirst({ where: { organizationId: project.organizationId, userId: request.user!.id } });
+  if (!member) throw new HttpError(403, "FORBIDDEN", "You do not have access to this project.");
+  return projectId;
 }
 
 function toQueueUpdateData(input: Record<string, unknown>) {
@@ -112,7 +123,7 @@ router.get("/projects/:projectId/queues", readRateLimit, async (request, respons
 
     const where = { projectId };
     const [queues, total] = await Promise.all([
-      prisma.queue.findMany({ where, orderBy: [{ createdAt: "desc" }], skip: (query.page - 1) * query.limit, take: query.limit }),
+      prisma.queue.findMany({ where, include: { retryPolicy: true }, orderBy: [{ createdAt: "desc" }], skip: (query.page - 1) * query.limit, take: query.limit }),
       prisma.queue.count({ where })
     ]);
     response.json({ data: queues, pagination: { page: query.page, limit: query.limit, hasMore: queues.length === query.limit, total, totalPages: Math.ceil(total / query.limit) } });
@@ -155,6 +166,76 @@ router.post("/projects/:projectId/queues", writeRateLimit, async (request, respo
   }
 });
 
+router.get("/projects/:projectId/queues/:queueId/metrics/history", readRateLimit, async (request, response, next) => {
+  try {
+    const projectId = asUuid(request.params.projectId, "projectId");
+    const queueId = asUuid(request.params.queueId, "queueId");
+    const hours = parseRequest(z.coerce.number().int().min(1).max(720).default(24), request.query.hours, "Invalid history range");
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { organizationId: true } });
+    if (!project) throw new HttpError(404, "NOT_FOUND", "Project not found.");
+    const member = await prisma.organizationMember.findFirst({ where: { organizationId: project.organizationId, userId: request.user!.id } });
+    if (!member) throw new HttpError(403, "FORBIDDEN", "You do not have access to this project.");
+    const queue = await prisma.queue.findUnique({ where: { id: queueId }, select: { id: true, projectId: true } });
+    if (!queue || queue.projectId !== projectId) throw new HttpError(404, "NOT_FOUND", "Queue not found.");
+
+    const snapshots = await prisma.$queryRaw<Array<{ id: string; queueId: string; projectId: string; capturedAt: Date; queuedCount: number; runningCount: number; scheduledCount: number }>>`
+      SELECT "id", "queueId", "projectId", "capturedAt", "queuedCount", "runningCount", "scheduledCount"
+      FROM "QueueDepthSnapshot"
+      WHERE "projectId" = ${projectId} AND "queueId" = ${queueId}
+        AND "capturedAt" >= NOW() - (${hours} * INTERVAL '1 hour')
+      ORDER BY "capturedAt" ASC
+      LIMIT 1000
+    `;
+    response.json({ data: snapshots });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get("/projects/:projectId/metrics/worker-utilization", readRateLimit, async (request, response, next) => {
+  try {
+    const projectId = asUuid(request.params.projectId, "projectId");
+    const project = await prisma.project.findUnique({ where: { id: projectId }, select: { organizationId: true } });
+    if (!project) throw new HttpError(404, "NOT_FOUND", "Project not found.");
+    const member = await prisma.organizationMember.findFirst({ where: { organizationId: project.organizationId, userId: request.user!.id } });
+    if (!member) throw new HttpError(403, "FORBIDDEN", "You do not have access to this project.");
+
+    const [executionWorkers, claimedWorkers, runningRows] = await Promise.all([
+      prisma.jobExecution.findMany({
+        where: { job: { queue: { projectId } } },
+        distinct: ["workerId"],
+        select: { workerId: true }
+      }),
+      prisma.job.findMany({
+        where: { queue: { projectId }, claimedBy: { not: null } },
+        distinct: ["claimedBy"],
+        select: { claimedBy: true }
+      }),
+      prisma.jobExecution.groupBy({
+      by: ["workerId"],
+      where: { status: "RUNNING", job: { queue: { projectId } } },
+      _count: { _all: true }
+      })
+    ]);
+    const workerIds = [...new Set([
+      ...executionWorkers.map((row) => row.workerId),
+      ...claimedWorkers.flatMap((row) => row.claimedBy ? [row.claimedBy] : [])
+    ])];
+    const workers = await prisma.worker.findMany({ where: { id: { in: workerIds }, organizationId: project.organizationId }, select: { id: true, name: true, concurrency: true, lastHeartbeatAt: true, status: true } });
+    const runningByWorker = new Map(runningRows.map((row) => [row.workerId, row._count._all]));
+    const utilization = workers.flatMap((worker) => {
+      if (worker.concurrency < 1) return [];
+      const runningJobs = runningByWorker.get(worker.id) ?? 0;
+      return [{ workerId: worker.id, workerName: worker.name, runningJobs, concurrency: worker.concurrency, utilization: (runningJobs / worker.concurrency) * 100, lastHeartbeat: worker.lastHeartbeatAt, status: worker.status }];
+    });
+    const capacity = utilization.reduce((total, worker) => total + worker.concurrency, 0);
+    const runningJobs = utilization.reduce((total, worker) => total + worker.runningJobs, 0);
+    response.json({ workers: utilization, aggregateUtilization: capacity > 0 ? (runningJobs / capacity) * 100 : null });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.patch("/queues/:id", writeRateLimit, async (request, response, next) => {
   try {
     const queueId = asUuid(request.params.id, "id");
@@ -176,6 +257,11 @@ router.patch("/queues/:id", writeRateLimit, async (request, response, next) => {
     });
 
     const body = parseRequest(allowed.partial(), request.body, "Invalid queue update");
+    if (body.retryPolicyId !== undefined) {
+      const retryPolicy = await prisma.retryPolicy.findUnique({ where: { id: body.retryPolicyId }, select: { id: true } });
+      if (!retryPolicy) throw new HttpError(404, "NOT_FOUND", "Retry policy not found.");
+    }
+
     const updateData = toQueueUpdateData(body as Record<string, unknown>);
     const updated = await prisma.queue.update({ where: { id: queueId }, data: updateData });
     response.json(updated);
@@ -265,10 +351,12 @@ router.post("/queues/:id/jobs/batch", batchRateLimit, async (request, response, 
 router.get("/jobs", readRateLimit, async (request, response, next) => {
   try {
     const query = parseQueryPagination(request.query as Record<string, unknown>);
+    const projectId = await getAuthorizedProjectId({ query: request.query as Record<string, unknown>, user: request.user });
     const filters: Record<string, unknown> = {
       queue: { project: { organizationId: { in: request.user!.organizationIds } } }
     };
     const raw = request.query as Record<string, unknown>;
+    if (projectId) filters.queue = { project: { id: projectId, organizationId: { in: request.user!.organizationIds } } };
     if (raw.status) filters.status = raw.status;
     if (raw.queueId) filters.queueId = raw.queueId;
     if (raw.jobType) filters.jobType = raw.jobType;
@@ -325,7 +413,8 @@ router.post("/queues/:id/scheduled-jobs", writeRateLimit, async (request, respon
 router.get("/scheduled-jobs", readRateLimit, async (request, response, next) => {
   try {
     const query = parseQueryPagination(request.query as Record<string, unknown>);
-    const where = { queue: { project: { organizationId: { in: request.user!.organizationIds } } } };
+    const projectId = await getAuthorizedProjectId({ query: request.query as Record<string, unknown>, user: request.user });
+    const where = { queue: { project: { organizationId: { in: request.user!.organizationIds }, ...(projectId ? { id: projectId } : {}) } } };
     const [scheduledJobs, total] = await Promise.all([
       prisma.scheduledJob.findMany({
         where,
@@ -378,7 +467,9 @@ router.get("/executions", readRateLimit, async (request, response, next) => {
   try {
     const query = parseQueryPagination(request.query as Record<string, unknown>);
     const raw = request.query as Record<string, unknown>;
+    const projectId = await getAuthorizedProjectId({ query: raw, user: request.user });
     const where: Record<string, unknown> = { job: { queue: { project: { organizationId: { in: request.user!.organizationIds } } } } };
+    if (projectId) where.job = { queue: { project: { id: projectId, organizationId: { in: request.user!.organizationIds } } } };
     if (raw.jobId) where.jobId = raw.jobId;
     if (raw.workerId) where.workerId = raw.workerId;
     if (raw.status) where.status = raw.status;
@@ -403,7 +494,7 @@ router.get("/jobs/:id", readRateLimit, async (request, response, next) => {
     const jobId = asUuid(request.params.id, "id");
     const job = await prisma.job.findUnique({
       where: { id: jobId },
-      include: { queue: { include: { project: true } }, executions: { orderBy: { attemptNumber: "asc" } }, deadLetterEntry: true }
+      include: { queue: { include: { project: true, retryPolicy: true } }, executions: { orderBy: { attemptNumber: "asc" }, include: { logs: { orderBy: { createdAt: "asc" } } } }, deadLetterEntry: true }
     });
     if (!job) throw new HttpError(404, "NOT_FOUND", "Job not found.");
 
@@ -429,7 +520,7 @@ router.get("/jobs/:id/executions", readRateLimit, async (request, response, next
     });
     if (!member) throw new HttpError(403, "FORBIDDEN", "You do not have access to this job.");
 
-    const executions = await prisma.jobExecution.findMany({ where: { jobId }, orderBy: { attemptNumber: "asc" } });
+    const executions = await prisma.jobExecution.findMany({ where: { jobId }, orderBy: { attemptNumber: "asc" }, include: { logs: { orderBy: { createdAt: "asc" } } } });
     response.json({ data: executions });
   } catch (error) {
     next(error);
@@ -487,10 +578,30 @@ router.get("/workers", readRateLimit, async (request, response, next) => {
     const query = parseQueryPagination(request.query as Record<string, unknown>);
     const where = { organizationId: { in: request.user!.organizationIds } };
     const [workers, total] = await Promise.all([
-      prisma.worker.findMany({ where, orderBy: [{ createdAt: "desc" }], skip: (query.page - 1) * query.limit, take: query.limit }),
+      prisma.worker.findMany({
+        where,
+        orderBy: [{ createdAt: "desc" }],
+        skip: (query.page - 1) * query.limit,
+        take: query.limit,
+        include: {
+          claimedJobs: {
+            where: { status: { in: [JobStatus.CLAIMED, JobStatus.RUNNING] } },
+            select: { id: true, jobType: true, queueId: true, status: true },
+            orderBy: { claimedAt: "asc" }
+          },
+          executions: {
+            orderBy: { createdAt: "desc" },
+            take: 1,
+            select: { job: { select: { id: true, jobType: true, queueId: true } } }
+          }
+        }
+      }),
       prisma.worker.count({ where })
     ]);
-    response.json({ data: workers, pagination: { page: query.page, limit: query.limit, hasMore: workers.length === query.limit, total, totalPages: Math.ceil(total / query.limit) } });
+    response.json({
+      data: workers.map(({ claimedJobs, executions, ...worker }) => ({ ...worker, currentJobs: claimedJobs, lastJob: executions[0]?.job ?? null })),
+      pagination: { page: query.page, limit: query.limit, hasMore: workers.length === query.limit, total, totalPages: Math.ceil(total / query.limit) }
+    });
   } catch (error) {
     next(error);
   }
@@ -553,9 +664,10 @@ router.post("/workers/:id/heartbeat", async (request, response, next) => {
 router.get("/dlq", readRateLimit, async (request, response, next) => {
   try {
     const query = parseQueryPagination(request.query as Record<string, unknown>);
-    const where = { job: { queue: { project: { organizationId: { in: request.user!.organizationIds } } } } };
+    const projectId = await getAuthorizedProjectId({ query: request.query as Record<string, unknown>, user: request.user });
+    const where = { job: { queue: { project: { organizationId: { in: request.user!.organizationIds }, ...(projectId ? { id: projectId } : {}) } } } };
     const [entries, total] = await Promise.all([
-      prisma.deadLetterEntry.findMany({ where, orderBy: { failedAt: "desc" }, skip: (query.page - 1) * query.limit, take: query.limit, include: { job: { include: { queue: { include: { project: true } } } } } }),
+      prisma.deadLetterEntry.findMany({ where, orderBy: { failedAt: "desc" }, skip: (query.page - 1) * query.limit, take: query.limit, include: { job: { include: { queue: { include: { project: true, retryPolicy: true } } } } } }),
       prisma.deadLetterEntry.count({ where })
     ]);
     response.json({ data: entries, pagination: { page: query.page, limit: query.limit, hasMore: entries.length === query.limit, total, totalPages: Math.ceil(total / query.limit) } });

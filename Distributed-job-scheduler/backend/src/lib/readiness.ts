@@ -1,5 +1,6 @@
 import { prisma } from "./prisma.js";
 import { redis } from "./redis.js";
+import { getWebSocketHealth } from "../events/websocketHub.js";
 
 async function withRetry(operation: () => Promise<void>, attempts = 5, delayMs = 200): Promise<boolean> {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
@@ -16,7 +17,7 @@ async function withRetry(operation: () => Promise<void>, attempts = 5, delayMs =
   return false;
 }
 
-export async function checkReadiness(): Promise<{ ok: boolean; failures: string[] }> {
+export async function checkReadiness(): Promise<{ ok: boolean; failures: string[]; database: "ready" | "unavailable"; redis: "ready" | "unavailable"; websocket: ReturnType<typeof getWebSocketHealth> }> {
   const failures: string[] = [];
 
   const dbCheck = await withRetry(async () => {
@@ -36,5 +37,7 @@ export async function checkReadiness(): Promise<{ ok: boolean; failures: string[
     failures.push("Redis unavailable");
   }
 
-  return { ok: failures.length === 0, failures };
+  const websocket = getWebSocketHealth();
+  if (websocket !== "ready") failures.push(`WebSocket server ${websocket}`);
+  return { ok: failures.length === 0, failures, database: dbCheck ? "ready" : "unavailable", redis: redisCheck ? "ready" : "unavailable", websocket };
 }

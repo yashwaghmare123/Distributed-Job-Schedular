@@ -2,73 +2,112 @@
 
 import { useEffect, useRef, useState } from "react";
 import { Activity, BarChart3, Clock3, Gauge, RefreshCw, Server, Timer } from "lucide-react";
-import { apiClient, apiText } from "@/lib/api";
+import { apiClient } from "@/lib/api";
 import { Failure, Loading, PageHeader } from "@/components/Shell";
-import { subscribeSocket } from "@/lib/socket";
-import { useSchedulerData } from "@/hooks/useScheduler";
-import type { ExecutionRow, ScheduledJob } from "@/lib/types";
+import { subscribeSocket, subscribeSocketStatus, type SocketStatus } from "@/lib/socket";
+import { BarChart, DurationChart, LineChart, MultiSeriesLegend, UtilizationBars, colors, formatDateTime } from "@/components/MetricCharts";
+import type { DlqEntry, ExecutionRow, Job, QueueDepthSnapshot, ScheduledJob, WorkerUtilization } from "@/lib/types";
+import { useSelectedProject } from "@/lib/projectContext";
 
-type MetricData = { executions: ExecutionRow[]; scheduled: ScheduledJob[]; dlqCount: number; text: string };
+type RangeKey = "1h" | "6h" | "24h" | "7d" | "30d";
+type MetricData = { jobs: Job[]; executions: ExecutionRow[]; scheduled: ScheduledJob[]; dlq: DlqEntry[]; queueHistory: Array<{ queueName: string; snapshots: QueueDepthSnapshot[] }>; workers: WorkerUtilization[] };
+const ranges: Array<{ key: RangeKey; label: string; hours: number }> = [{ key: "1h", label: "Last 1 hour", hours: 1 }, { key: "6h", label: "Last 6 hours", hours: 6 }, { key: "24h", label: "Last 24 hours", hours: 24 }, { key: "7d", label: "Last 7 days", hours: 168 }, { key: "30d", label: "Last 30 days", hours: 720 }];
 
-function prometheusValue(text: string, name: string) {
-  const match = text.match(new RegExp(`^${name}\\s+([0-9.]+)$`, "m"));
-  return match ? Number(match[1]) : null;
-}
-
-function formatNumber(value: number | null) { return value === null ? "Unavailable" : value.toLocaleString(); }
-
-function BarChart({ values, colors = ["var(--cyan)"] }: { values: Array<{ label: string; value: number }>; colors?: string[] }) {
-  const maximum = Math.max(...values.map((item) => item.value), 1);
-  return <div className="metric-bars" style={{ display: "grid", gap: 14 }}>{values.map((item, index) => <div className="metric-bar-row" key={`${item.label}-${index}`} style={{ display: "grid", gridTemplateColumns: "88px minmax(0, 1fr) 48px", gap: 10, alignItems: "center", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 12 }}><span>{item.label}</span><div className="metric-bar-track" style={{ height: 10, background: "var(--ink)", border: "1px solid var(--line)" }}><i style={{ display: "block", height: "100%", width: `${Math.max((item.value / maximum) * 100, item.value ? 4 : 0)}%`, background: colors[index % colors.length] }} /></div><b style={{ textAlign: "right" }}>{item.value.toLocaleString()}</b></div>)}</div>;
-}
-
-function LineChart({ values }: { values: number[] }) {
-  if (!values.length) return <div className="empty">No completed execution timestamps available.</div>;
-  const maximum = Math.max(...values, 1);
-  const points = values.map((value, index) => `${(index / Math.max(values.length - 1, 1)) * 100},${100 - (value / maximum) * 84 - 8}`).join(" ");
-  return <svg className="metric-line" style={{ display: "block", width: "100%", height: 180, background: "linear-gradient(to bottom, transparent 24%, var(--line) 25%, transparent 26%, transparent 49%, var(--line) 50%, transparent 51%, transparent 74%, var(--line) 75%, transparent 76%)" }} viewBox="0 0 100 100" preserveAspectRatio="none" role="img" aria-label="Jobs completed over time"><polyline points={points} fill="none" stroke="var(--cyan)" strokeWidth="2" vectorEffect="non-scaling-stroke" /></svg>;
-}
-
-function MetricPanel({ title, icon, children, detail }: { title: string; icon: React.ReactNode; children: React.ReactNode; detail?: string }) {
-  return <section className="panel metric-panel"><div className="panel-head"><h3 className="panel-title">{title}</h3>{icon}</div>{children}{detail && <p className="metric-detail subtle" style={{ marginBottom: 0, lineHeight: 1.5 }}>{detail}</p>}</section>;
-}
+function MetricPanel({ title, icon, children, detail }: { title: string; icon: React.ReactNode; children: React.ReactNode; detail: string }) { return <section className="panel metric-panel"><div className="panel-head"><div><h3 className="panel-title">{title}</h3><p className="metric-detail subtle">{detail}</p></div>{icon}</div>{children}</section>; }
+function inRange(value: string | null | undefined, hours: number) { return Boolean(value && new Date(value).getTime() >= Date.now() - hours * 3_600_000); }
 
 export default function MetricsPage() {
-  const { jobs, workers, events, socketStatus, loading: schedulerLoading, error: schedulerError, reload } = useSchedulerData();
+  const { selectedProject } = useSelectedProject();
+  const projectId = selectedProject?.id ?? null;
+  const [socketStatus, setSocketStatus] = useState<SocketStatus>("DISCONNECTED");
+  const [range, setRange] = useState<RangeKey>("24h");
   const [data, setData] = useState<MetricData | null>(null);
-  const [metricsError, setMetricsError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const refreshTimerRef = useRef<number | null>(null);
-  const load = async () => {
-    try {
-      const [executions, scheduled, dlq, text] = await Promise.all([apiClient.allExecutions(), apiClient.allScheduledJobs(), apiClient.dlq(), apiText("/metrics")]);
-      setData({ executions, scheduled, dlqCount: dlq.data.length, text });
-      setMetricsError(null);
-    } catch (err) { setMetricsError(err instanceof Error ? err.message : "Unable to load metrics"); }
-  };
-  useEffect(() => { void load(); const unsubscribe = subscribeSocket((event) => { if (event.type === "worker.heartbeat") return; if (refreshTimerRef.current !== null) return; refreshTimerRef.current = window.setTimeout(() => { refreshTimerRef.current = null; void load(); void reload(); }, 10000); }); return () => { unsubscribe(); if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current); }; }, []);
+  const refreshIntervalRef = useRef<number | null>(null);
+  const retryTimerRef = useRef<number | null>(null);
+  const retryAttemptRef = useRef(0);
+  const activeProjectRef = useRef<string | null>(projectId);
+  const requestSequenceRef = useRef(0);
+  const loadRef = useRef<() => Promise<void>>(() => Promise.resolve());
+  const selectedRange = ranges.find((item) => item.key === range) ?? ranges[2];
 
-  if (schedulerLoading || !data) return <><PageHeader eyebrow="Operations / metrics" title="Metrics console" detail="Live measurements from scheduler APIs, database records, and Prometheus counters." />{(schedulerError || metricsError) && <Failure message={schedulerError ?? metricsError ?? "Unable to load metrics"} />}<Loading /></>;
-  const completed = jobs.filter((job) => job.status === "COMPLETED").length;
-  const failed = jobs.filter((job) => job.status === "FAILED").length;
-  const queueDepth = prometheusValue(data.text, "queue_depth");
-  const retryCount = prometheusValue(data.text, "jobs_retried_total");
-  const processedOverTime = jobs.filter((job) => job.completedAt).sort((a, b) => new Date(a.completedAt!).getTime() - new Date(b.completedAt!).getTime()).map((_, index) => index + 1);
-  const durations = data.executions.filter((execution) => execution.durationMs !== null && execution.durationMs !== undefined).slice(-12);
-  const utilization = workers.map((worker) => ({ label: worker.name, value: worker.concurrency ? Math.round((worker.currentJobCount / worker.concurrency) * 100) : 0 }));
+  const load = async () => {
+    if (!projectId) return;
+    const requestSequence = ++requestSequenceRef.current;
+    setRefreshing(true);
+    try {
+      const [jobs, executions, scheduled, dlq, queues, utilization] = await Promise.all([apiClient.allJobs(projectId), apiClient.allExecutions(projectId), apiClient.allScheduledJobs(projectId), apiClient.allDlq(projectId), apiClient.allQueues(projectId), apiClient.workerUtilization(projectId)]);
+      const queueHistory = await Promise.all(queues.map(async (queue) => ({ queueName: queue.name, snapshots: (await apiClient.queueDepthHistory(projectId, queue.id, selectedRange.hours)).data })));
+      if (activeProjectRef.current !== projectId || requestSequence !== requestSequenceRef.current) return;
+      setData({ jobs, executions, scheduled, dlq, queueHistory, workers: utilization.workers });
+      setError(null);
+      retryAttemptRef.current = 0;
+    } catch (err) {
+      if (activeProjectRef.current === projectId && requestSequence === requestSequenceRef.current) {
+        const rateLimited = err instanceof Error && "status" in err && err.status === 429;
+        setError(rateLimited ? "Metrics temporarily rate limited. Retrying shortly." : err instanceof Error ? err.message : "Unable to load metrics");
+        if (rateLimited && retryTimerRef.current === null) {
+          const delay = Math.min(5000 * 2 ** retryAttemptRef.current, 60000);
+          retryAttemptRef.current += 1;
+          retryTimerRef.current = window.setTimeout(() => { retryTimerRef.current = null; void loadRef.current(); }, delay);
+        }
+      }
+    }
+    finally { setRefreshing(false); }
+  };
+
+  loadRef.current = load;
+  useEffect(() => {
+    activeProjectRef.current = projectId;
+    requestSequenceRef.current += 1;
+    setData(null);
+    void loadRef.current();
+    refreshIntervalRef.current = window.setInterval(() => void loadRef.current(), 60000);
+    const unsubscribeStatus = subscribeSocketStatus(setSocketStatus);
+    const unsubscribe = subscribeSocket((event) => {
+      if (event.projectId !== projectId || event.type === "worker.heartbeat" || refreshTimerRef.current !== null) return;
+      refreshTimerRef.current = window.setTimeout(() => { refreshTimerRef.current = null; void loadRef.current(); }, 10000);
+    });
+    return () => {
+      if (refreshIntervalRef.current !== null) window.clearInterval(refreshIntervalRef.current);
+      if (refreshTimerRef.current !== null) window.clearTimeout(refreshTimerRef.current);
+      if (retryTimerRef.current !== null) window.clearTimeout(retryTimerRef.current);
+      unsubscribe();
+      unsubscribeStatus();
+    };
+  }, [projectId, range]);
+
+  if (!projectId || !data) return <><PageHeader eyebrow="Operations / metrics" title="Metrics console" detail="Project-scoped measurements from persisted scheduler records." />{error && <Failure message={error} />}<Loading /></>;
+  const executions = data.executions.filter((execution) => inRange(execution.completedAt ?? execution.startedAt, selectedRange.hours));
+  const completed = executions.filter((execution) => execution.status === "COMPLETED").length;
+  const failed = executions.filter((execution) => execution.status === "FAILED").length;
+  const processedPoints = [...new Set(executions.filter((execution) => execution.status === "COMPLETED" && execution.completedAt).map((execution) => { const timestamp = new Date(execution.completedAt!); timestamp.setMinutes(0, 0, 0); return timestamp.toISOString(); }))].sort().map((label) => ({ label, value: executions.filter((execution) => execution.status === "COMPLETED" && execution.completedAt && new Date(execution.completedAt).toISOString().slice(0, 13) === label.slice(0, 13)).length })).reduce((points, point) => [...points, { ...point, value: point.value + (points.at(-1)?.value ?? 0) }], [] as Array<{ label: string; value: number }>);
+  const queueValues = ["QUEUED", "CLAIMED", "RUNNING", "RETRY", "SCHEDULED"].map((status) => ({ label: status, value: data.jobs.filter((job) => job.status === status).length }));
+  const depthSeries = data.queueHistory.map((item, index) => ({ label: item.queueName, color: colors[index % colors.length], points: item.snapshots.filter((snapshot) => inRange(snapshot.capturedAt, selectedRange.hours)).map((snapshot) => ({ label: snapshot.capturedAt, value: snapshot.queuedCount + snapshot.runningCount, detail: `Queued ${snapshot.queuedCount}, running ${snapshot.runningCount}` })) }));
+  const durations = executions.filter((execution) => execution.durationMs !== null && execution.durationMs !== undefined && (execution.completedAt || execution.startedAt)).sort((a, b) => new Date(a.completedAt ?? a.startedAt ?? 0).getTime() - new Date(b.completedAt ?? b.startedAt ?? 0).getTime()).map((execution) => ({ label: execution.completedAt ?? execution.startedAt!, value: execution.durationMs!, detail: `${execution.job.jobType} · attempt ${execution.attemptNumber} · started ${execution.startedAt ? formatDateTime(execution.startedAt) : "unknown"}` }));
+  const attempts = [...new Set(executions.map((execution) => execution.attemptNumber))].sort((a, b) => a - b).map((attempt) => ({ label: `Attempt ${attempt}`, value: executions.filter((execution) => execution.attemptNumber === attempt).length }));
+  const dlqReasons = [...new Set(data.dlq.filter((entry) => inRange(entry.failedAt, selectedRange.hours)).map((entry) => entry.reason))].map((reason) => ({ label: reason, value: data.dlq.filter((entry) => inRange(entry.failedAt, selectedRange.hours) && entry.reason === reason).length }));
+  const scheduled = [{ label: "Enabled", value: data.scheduled.filter((job) => job.enabled).length }, { label: "Disabled", value: data.scheduled.filter((job) => !job.enabled).length }];
+  const rangeData = executions.length ? `${formatDateTime(executions.at(-1)?.completedAt ?? executions.at(-1)?.startedAt ?? "")} to ${formatDateTime(executions[0]?.completedAt ?? executions[0]?.startedAt ?? "")}` : "No execution records in selected range";
+
   return <>
-    <PageHeader eyebrow="Operations / metrics" title="Metrics console" detail="Live measurements from scheduler APIs, database records, and Prometheus counters."><button className="button secondary" onClick={() => { void load(); void reload(); }}><RefreshCw size={14} /> Refresh</button></PageHeader>
-    {(schedulerError || metricsError) && <Failure message={schedulerError ?? metricsError ?? "Unable to load metrics"} />}
-    <div className="grid stats metric-stats">{[["Queued", "QUEUED"], ["Claimed", "CLAIMED"], ["Running", "RUNNING"], ["Completed", "COMPLETED"], ["Failed", "FAILED"], ["Retry", "RETRY"], ["DLQ", "DEAD_LETTER"], ["Scheduled", "SCHEDULED"]].map(([label, status]) => <div className="stat" key={status}><span className="stat-label">{label}</span><strong className="stat-value">{jobs.filter((job) => job.status === status).length}</strong></div>)}</div>
+    <PageHeader eyebrow="Operations / metrics" title="Metrics console" detail={`Persisted project metrics · ${selectedRange.label}`}><button className="button secondary" type="button" onClick={() => void loadRef.current()} disabled={refreshing}><RefreshCw size={14} />{refreshing ? "Refreshing..." : "Refresh"}</button></PageHeader>
+    {error && <Failure message={error} />}
+    <div className="metric-controls"><label>Time range<select value={range} onChange={(event) => setRange(event.target.value as RangeKey)}>{ranges.map((item) => <option value={item.key} key={item.key}>{item.label}</option>)}</select></label><span className="subtle">Data shown only when persisted records exist · {rangeData}</span></div>
+    <div className="grid stats metric-stats">{[["Completed", completed], ["Failed", failed], ["Running", data.jobs.filter((job) => job.status === "RUNNING").length], ["Queued", data.jobs.filter((job) => job.status === "QUEUED").length]].map(([label, value]) => <div className="stat" key={label}><span className="stat-label">{label}</span><strong className="stat-value">{value}</strong></div>)}</div>
     <div className="grid content-grid metric-grid">
-      <MetricPanel title="Jobs processed over time" icon={<Activity size={18} color="var(--cyan)" />} detail="Cumulative completed jobs, using real completedAt timestamps."><LineChart values={processedOverTime} /></MetricPanel>
-      <MetricPanel title="Completed vs failed" icon={<BarChart3 size={18} color="var(--cyan)" />}><BarChart values={[{ label: "Completed", value: completed }, { label: "Failed", value: failed }]} colors={["var(--cyan)", "var(--red)"]} /></MetricPanel>
-      <MetricPanel title="Queue depth" icon={<Gauge size={18} color="var(--amber)" />} detail="Current backend gauge. Historical queue-depth data is not exposed by the backend."><div className="metric-gauge" style={{ display: "grid", gap: 8 }}><strong style={{ fontSize: 42, color: "var(--amber)" }}>{formatNumber(queueDepth)}</strong><span className="subtle">jobs currently queued, claimed, running, retrying, or scheduled</span></div></MetricPanel>
-      <MetricPanel title="Execution duration" icon={<Timer size={18} color="var(--blue)" />} detail="Real durationMs values from execution records."><BarChart values={durations.map((execution) => ({ label: `Attempt ${execution.attemptNumber}`, value: execution.durationMs ?? 0 }))} colors={["var(--blue)"]} /></MetricPanel>
-      <MetricPanel title="Worker utilization" icon={<Server size={18} color="var(--cyan)" />} detail="Current jobs divided by each worker's declared concurrency."><BarChart values={utilization} colors={["var(--cyan)"]} /></MetricPanel>
-      <MetricPanel title="Retry count" icon={<RefreshCw size={18} color="var(--amber)" />} detail="Prometheus jobs_retried_total counter from the backend."><div className="metric-gauge" style={{ display: "grid", gap: 8 }}><strong style={{ fontSize: 42, color: "var(--amber)" }}>{formatNumber(retryCount)}</strong><span className="subtle">real retry events recorded by the service</span></div></MetricPanel>
-      <MetricPanel title="DLQ count" icon={<Clock3 size={18} color="var(--red)" />} detail="Current count from the authenticated dead-letter API."><div className="metric-gauge" style={{ display: "grid", gap: 8 }}><strong style={{ fontSize: 42, color: "var(--red)" }}>{data.dlqCount.toLocaleString()}</strong><span className="subtle">dead-letter records currently exposed</span></div></MetricPanel>
-      <MetricPanel title="Scheduled jobs" icon={<Activity size={18} color="var(--amber)" />} detail="Current scheduled-job records from the scheduler API."><BarChart values={[{ label: "Enabled", value: data.scheduled.filter((job) => job.enabled).length }, { label: "Disabled", value: data.scheduled.filter((job) => !job.enabled).length }]} colors={["var(--amber)", "var(--muted)"]} /></MetricPanel>
+      <MetricPanel title="Jobs processed over time" icon={<Activity size={18} color="var(--cyan)" />} detail="Completed executions grouped by the real persisted completedAt hour."><LineChart title="Completed executions over time" series={[{ label: "Completed", color: colors[0], points: processedPoints }]} emptyMessage="No completed execution history available yet." /><p className="metric-summary">Total completed: <strong>{completed.toLocaleString()}</strong></p></MetricPanel>
+      <MetricPanel title="Completed vs failed" icon={<BarChart3 size={18} color="var(--cyan)" />} detail="Counts from JobExecution records in the selected time range."><BarChart title="Completed versus failed executions" xLabel="Execution status" yLabel="Executions" values={[{ label: "Completed", value: completed }, { label: "Failed", value: failed }]} colors={[colors[0], "#be123c"]} /><p className="metric-summary">Total executions: <strong>{(completed + failed).toLocaleString()}</strong></p></MetricPanel>
+      <MetricPanel title="Queue depth" icon={<Gauge size={18} color="var(--amber)" />} detail="Current project jobs by lifecycle state. Zero values remain visible."><BarChart title="Current jobs by lifecycle state" xLabel="Lifecycle state" yLabel="Jobs" values={queueValues} colors={["#b45309", "#4338ca", colors[0], "#be123c", "#64748b"]} /></MetricPanel>
+      <MetricPanel title="Queue depth over time" icon={<Gauge size={18} color="var(--amber)" />} detail="Queued plus running counts from separate persisted snapshot series per queue."><LineChart title="Queue depth over time" series={depthSeries} emptyMessage="No queue depth history available yet." /><div className="metric-legend"><MultiSeriesLegend series={depthSeries} /></div></MetricPanel>
+      <MetricPanel title="Execution duration" icon={<Timer size={18} color="var(--blue)" />} detail="Duration in milliseconds plotted at each real execution timestamp."><DurationChart values={durations} /></MetricPanel>
+      <MetricPanel title="Worker utilization" icon={<Server size={18} color="var(--cyan)" />} detail="Current running jobs divided by each worker's configured concurrency."><UtilizationBars workers={data.workers} /></MetricPanel>
+      <MetricPanel title="Retry attempts" icon={<RefreshCw size={18} color="var(--amber)" />} detail="Persisted JobExecution attemptNumber distribution."><BarChart title="Executions by attempt number" xLabel="Attempt number" yLabel="Executions" values={attempts} colors={["#b45309"]} emptyMessage="No execution attempts available yet." /></MetricPanel>
+      <MetricPanel title="Dead-letter entries" icon={<Clock3 size={18} color="var(--red)" />} detail="Real DLQ reason fields in the selected time range."><BarChart title="Dead-letter entries by reason" xLabel="Reason" yLabel="Entries" values={dlqReasons} colors={["#be123c"]} emptyMessage="No dead-lettered jobs." /></MetricPanel>
+      <MetricPanel title="Scheduled jobs" icon={<Activity size={18} color="var(--amber)" />} detail="Current recurring schedule records from the project-scoped scheduler API."><BarChart title="Scheduled jobs by status" xLabel="Schedule status" yLabel="Jobs" values={scheduled} colors={["#b45309", "#64748b"]} emptyMessage="No scheduled jobs available yet." /></MetricPanel>
     </div>
-    <p className="metric-updated">{socketStatus === "CONNECTED" ? (events.length ? `WebSocket connected · ${events.length} recent events in memory` : "WebSocket connected · no events received yet") : socketStatus === "RECONNECTING" ? "WebSocket reconnecting" : "WebSocket disconnected"}</p>
+    <p className="metric-updated">{socketStatus === "CONNECTED" ? "WebSocket connected · authoritative refresh after project events" : socketStatus === "RECONNECTING" ? "WebSocket reconnecting" : "WebSocket disconnected"}</p>
   </>;
 }

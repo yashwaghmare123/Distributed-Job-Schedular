@@ -1,13 +1,16 @@
 import { pathToFileURL } from "node:url";
 import type { Server as HttpServer } from "node:http";
-import { WorkerStatus } from "@prisma/client";
+import { JobStatus, WorkerStatus } from "@prisma/client";
 import { prisma } from "./lib/prisma.js";
 import { createApp } from "./api/index.js";
 import { WebSocketHub } from "./events/websocketHub.js";
 import { Scheduler } from "./core/scheduler.js";
-import { WorkerRuntime } from "./core/workerRuntime.js";
+import { WorkerRuntime, type JobHandler } from "./core/workerRuntime.js";
 import { RetryProcessor } from "./core/retryProcessor.js";
+import { DeadLetterProcessor } from "./core/deadLetterProcessor.js";
 import { redis } from "./lib/redis.js";
+import { captureQueueDepthSnapshots } from "./lib/metrics.js";
+import { registeredJobHandler } from "./core/jobHandlers.js";
 
 export { createApp };
 
@@ -16,6 +19,9 @@ export type RuntimeBootstrapOptions = {
   port?: number;
   schedulerPollIntervalMs?: number;
   workerPollIntervalMs?: number;
+  workerConcurrency?: number;
+  workerHeartbeatIntervalMs?: number;
+  workerHandler?: JobHandler;
 };
 
 export type RuntimeBootstrapHandle = {
@@ -31,7 +37,9 @@ function getConfiguredPort(port?: number): number {
   return configuredPort;
 }
 
-async function ensureQueueWorker(queueId: string): Promise<{ id: string; organizationId: string; name: string }> {
+export const defaultWorkerHandler: JobHandler = registeredJobHandler;
+
+async function ensureQueueWorker(queueId: string, workerConcurrency: number): Promise<{ id: string; organizationId: string; name: string }> {
   const queue = await prisma.queue.findUnique({
     where: { id: queueId },
     select: {
@@ -50,7 +58,7 @@ async function ensureQueueWorker(queueId: string): Promise<{ id: string; organiz
     where: { organizationId_name: { organizationId: queue.project.organizationId, name } },
     update: {
       status: WorkerStatus.ONLINE,
-      concurrency: Math.max(queue.concurrencyLimit, 1),
+      concurrency: workerConcurrency,
       currentJobCount: 0,
       lastHeartbeatAt: new Date(),
       startedAt: new Date(),
@@ -61,7 +69,7 @@ async function ensureQueueWorker(queueId: string): Promise<{ id: string; organiz
       organizationId: queue.project.organizationId,
       name,
       status: WorkerStatus.ONLINE,
-      concurrency: Math.max(queue.concurrencyLimit, 1),
+      concurrency: workerConcurrency,
       currentJobCount: 0,
       lastHeartbeatAt: new Date(),
       startedAt: new Date()
@@ -84,9 +92,12 @@ export async function startRuntimeBootstrap(options: RuntimeBootstrapOptions = {
 
   const scheduler = new Scheduler();
   const retryProcessor = new RetryProcessor();
+  const deadLetterProcessor = new DeadLetterProcessor();
   const runtimeWorkers = new Map<string, WorkerRuntime>();
   const schedulerPollIntervalMs = options.schedulerPollIntervalMs ?? Number.parseInt(process.env.SCHEDULER_POLL_INTERVAL_MS ?? "5000", 10);
   const workerPollIntervalMs = options.workerPollIntervalMs ?? Number.parseInt(process.env.WORKER_POLL_INTERVAL_MS ?? "250", 10);
+  const workerConcurrency = options.workerConcurrency ?? Number.parseInt(process.env.WORKER_CONCURRENCY ?? "1", 10);
+  const workerHeartbeatIntervalMs = options.workerHeartbeatIntervalMs ?? Number.parseInt(process.env.WORKER_HEARTBEAT_INTERVAL_MS ?? "5000", 10);
   const schedulerTickPromises = new Set<Promise<void>>();
   let shutdownRequested = false;
   let shutdownPromise: Promise<void> | null = null;
@@ -98,12 +109,14 @@ export async function startRuntimeBootstrap(options: RuntimeBootstrapOptions = {
         continue;
       }
 
-      const runtimeWorker = await ensureQueueWorker(queue.id);
+      const runtimeWorker = await ensureQueueWorker(queue.id, workerConcurrency);
       const runtime = new WorkerRuntime({
         workerId: runtimeWorker.id,
         queueId: queue.id,
         pollIntervalMs: workerPollIntervalMs,
-        handler: async (job) => ({ ok: true, jobId: job.id, workerId: runtimeWorker.id, status: "COMPLETED" })
+        heartbeatIntervalMs: workerHeartbeatIntervalMs,
+        concurrency: workerConcurrency,
+        handler: options.workerHandler ?? defaultWorkerHandler
       });
 
       runtime.start();
@@ -113,6 +126,11 @@ export async function startRuntimeBootstrap(options: RuntimeBootstrapOptions = {
   };
 
   await ensureRuntimeWorkers();
+  try {
+    await captureQueueDepthSnapshots();
+  } catch (error) {
+    console.error("Initial queue metrics snapshot failed.", error);
+  }
   console.log("Scheduler started");
   console.log("Worker started");
 
@@ -141,6 +159,19 @@ export async function startRuntimeBootstrap(options: RuntimeBootstrapOptions = {
           if (shutdownRequested) {
             return;
           }
+          const failedJobs = await prisma.job.findMany({
+            where: { queueId: queue.id, status: JobStatus.FAILED },
+            select: { id: true }
+          });
+          for (const failedJob of failedJobs) {
+            if (shutdownRequested) {
+              return;
+            }
+            const retry = await retryProcessor.scheduleFailedJob(failedJob.id, queue.id);
+            if (!retry.scheduled) {
+              await deadLetterProcessor.processDeadLetter(failedJob.id, queue.id);
+            }
+          }
           const dueScheduledJobs = await prisma.scheduledJob.findMany({
             where: { queueId: queue.id, enabled: true, nextRunAt: { lte: new Date() } },
             select: { id: true }
@@ -152,6 +183,7 @@ export async function startRuntimeBootstrap(options: RuntimeBootstrapOptions = {
             await scheduler.materializeDueScheduledJob(scheduledJob.id, queue.id);
           }
         }
+        await captureQueueDepthSnapshots();
       } catch (error) {
         if (!shutdownRequested) {
           console.error("Scheduler tick failed.", error);

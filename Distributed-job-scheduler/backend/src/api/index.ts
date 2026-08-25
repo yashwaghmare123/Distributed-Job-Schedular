@@ -9,6 +9,8 @@ import { apiErrorHandler, notFoundHandler } from "./lib/errors.js";
 import { logger, type Logger } from "../lib/logger.js";
 import { metricsText, metricsRegistry } from "../lib/metrics.js";
 import { checkReadiness } from "../lib/readiness.js";
+import { getJobHandlerDefinitions } from "../core/jobHandlers.js";
+import { requireAuth } from "./middleware/auth.js";
 
 export function createApp() {
   const app = express();
@@ -46,10 +48,10 @@ export function createApp() {
   app.get("/ready", async (_request, response) => {
     const readiness = await checkReadiness();
     if (readiness.ok) {
-      response.status(200).json({ status: "ok" });
+      response.status(200).json({ status: "ok", database: readiness.database, redis: readiness.redis, websocket: readiness.websocket });
       return;
     }
-    response.status(503).json({ status: "error", error: readiness.failures.join(", ") });
+    response.status(503).json({ status: "error", error: readiness.failures.join(", "), database: readiness.database, redis: readiness.redis, websocket: readiness.websocket });
   });
 
   app.get("/metrics", async (_request, response) => {
@@ -58,6 +60,9 @@ export function createApp() {
   });
 
   app.use("/auth", authRouter);
+  app.get("/job-handlers", requireAuth, (_request, response) => {
+    response.json({ data: getJobHandlerDefinitions() });
+  });
   app.use("/projects", projectsRouter);
   app.use(apiRoutes);
 

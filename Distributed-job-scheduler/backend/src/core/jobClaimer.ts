@@ -19,6 +19,27 @@ export async function claimNextJob(workerId: string, queueId: string) {
 
   const claimed = await prisma.$transaction(
     async (tx) => {
+      const queues = await tx.$queryRaw<Array<{ id: string; isPaused: boolean; concurrencyLimit: number }>>`
+        SELECT "id", "isPaused", "concurrencyLimit"
+        FROM "Queue"
+        WHERE "id" = ${queueId}::uuid
+        FOR UPDATE
+      `;
+      const queue = queues[0];
+      if (!queue || queue.isPaused) {
+        return null;
+      }
+
+      const activeJobs = await tx.job.count({
+        where: {
+          queueId,
+          status: { in: [JobStatus.CLAIMED, JobStatus.RUNNING] }
+        }
+      });
+      if (activeJobs >= queue.concurrencyLimit) {
+        return null;
+      }
+
       const rows = await tx.$queryRaw<Array<ClaimedJobRow>>`
         SELECT
           "id",
@@ -63,7 +84,9 @@ export async function claimNextJob(workerId: string, queueId: string) {
       });
     },
     {
-      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted
+      isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted,
+      maxWait: 10_000,
+      timeout: 10_000
     }
   );
   if (claimed) await publishJobStateEvent(claimed.id, "job.claimed", JobStatus.CLAIMED, JobStatus.QUEUED);

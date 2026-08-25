@@ -3,3 +3,48 @@ node_modules
 .env
 
 /generated/prisma
+# Dependencies
+**/node_modules/
+
+# Next.js
+frontend/.next/
+frontend/out/
+
+# Environment files
+**/.env
+**/.env.*
+!**/.env.example
+
+# Logs
+**/*.log
+**/logs/
+
+# TypeScript
+**/*.tsbuildinfo
+
+# Coverage
+**/coverage/
+**/.nyc_output/
+
+# IDE
+**/.vscode/
+**/.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+**/*.tmp
+**/*.temp
+**/AGENTS.md
+**/CLAUDE.md
+# AI / editor tooling
+**/.claude/
+**/.agents/
+**/.windsurf/
+**/.step4-smoke/
+
+# Local/debug output
+**/api-regression-output.txt
+**/tsc_errors.txt

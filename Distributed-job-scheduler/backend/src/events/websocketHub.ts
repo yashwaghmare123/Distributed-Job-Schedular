@@ -10,6 +10,14 @@ type Client = { socket: WebSocket; organizationIds: Set<string>; queues: Set<str
 
 type ClientMessage = { type: "subscribe" | "unsubscribe"; queueId?: string; jobId?: string };
 
+let websocketConfigured = false;
+let websocketAttached = false;
+
+export function getWebSocketHealth(): "ready" | "unavailable" | "not_configured" {
+  if (!websocketConfigured) return "not_configured";
+  return websocketAttached ? "ready" : "unavailable";
+}
+
 export class WebSocketHub {
   private readonly server: WebSocketServer;
   private readonly clients = new Set<Client>();
@@ -19,9 +27,11 @@ export class WebSocketHub {
     this.server = new WebSocketServer({ noServer: true });
     this.unsubscribeEvents = eventBus.subscribe((event) => this.broadcast(event));
     this.server.on("connection", (socket, request) => void this.accept(socket, request));
+    websocketConfigured = true;
   }
 
   attach(server: HttpServer): void {
+    websocketAttached = true;
     server.on("upgrade", (request, socket, head) => {
       if (new URL(request.url ?? "/", "http://localhost").pathname !== "/ws") {
         socket.destroy();
@@ -32,6 +42,7 @@ export class WebSocketHub {
   }
 
   close(): void {
+    websocketAttached = false;
     this.unsubscribeEvents();
     for (const client of this.clients) client.socket.close();
     this.clients.clear();

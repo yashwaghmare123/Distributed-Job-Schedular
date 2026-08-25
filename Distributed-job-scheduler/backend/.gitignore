@@ -3,3 +3,45 @@ node_modules
 .env
 
 /generated/prisma
+
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# TypeScript
+*.tsbuildinfo
+
+# Test / debug output
+coverage/
+.nyc_output/
+api-regression-output.txt
+tsc_errors.txt
+
+# Local development / IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+
+# Claude / AI tooling
+.claude/
+.agents/
+.windsurf/
+.step4-smoke/
+
+# Prisma local/generated artifacts
+# Keep prisma/schema.prisma and migrations tracked

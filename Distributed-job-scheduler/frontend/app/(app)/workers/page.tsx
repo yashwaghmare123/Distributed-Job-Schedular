@@ -14,6 +14,7 @@ export default function WorkersPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
+    setWorkers([]);
     setLoading(true);
     apiClient
       .workers(`?page=${page}&limit=25`)
@@ -27,8 +28,8 @@ export default function WorkersPage() {
     <>
       <PageHeader
         eyebrow="Operations / workers"
-        title="Worker fleet"
-        detail="Live liveness and capacity from the backend."
+        title="Shared worker fleet"
+        detail="Workers are organization-shared infrastructure; project ownership is not modeled by the backend."
       />
       {error && <Failure message={error} />}
       {loading && !error ? (
@@ -42,6 +43,7 @@ export default function WorkersPage() {
                   <th>Worker</th>
                   <th>Status</th>
                   <th>Current jobs</th>
+                  <th>Working on</th>
                   <th>Concurrency</th>
                   <th>Last heartbeat</th>
                 </tr>
@@ -57,6 +59,17 @@ export default function WorkersPage() {
                       <StatusBadge status={worker.status} />
                     </td>
                     <td>{worker.currentJobCount}</td>
+                    <td>
+                      {worker.currentJobs?.length
+                        ? worker.currentJobs.map((job) => (
+                            <Link key={job.id} href={`/jobs/${job.id}`} style={{ display: "block" }}>
+                              {job.jobType}
+                            </Link>
+                          ))
+                        : worker.lastJob
+                          ? <><span className="subtle">Last: </span><Link href={`/jobs/${worker.lastJob.id}`}>{worker.lastJob.jobType}</Link></>
+                          : <span className="subtle">Idle</span>}
+                    </td>
                     <td>{worker.concurrency}</td>
                     <td className="subtle">
                       {worker.lastHeartbeatAt

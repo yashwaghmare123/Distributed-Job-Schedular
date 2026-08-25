@@ -98,6 +98,7 @@ model Project {
   updatedAt         DateTime    @updatedAt
   organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Restrict)
   queues            Queue[]
+  queueDepthSnapshots QueueDepthSnapshot[]
 
   @@unique([organizationId, name])
   @@index([organizationId])
@@ -135,11 +136,28 @@ model Queue {
   jobs              Job[]
   batches           JobBatch[]
   scheduledJobs     ScheduledJob[]
+  queueDepthSnapshots QueueDepthSnapshot[]
 
   @@unique([projectId, name])
   @@index([projectId])
   @@index([retryPolicyId])
   @@index([projectId, isPaused])
+}
+
+model QueueDepthSnapshot {
+  id            String   @id @default(uuid()) @db.Uuid
+  queueId       String   @db.Uuid
+  projectId     String   @db.Uuid
+  capturedAt    DateTime @default(now())
+  queuedCount   Int
+  runningCount  Int
+  scheduledCount Int
+  queue         Queue   @relation(fields: [queueId], references: [id], onDelete: Cascade)
+  project       Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([queueId, capturedAt])
+  @@index([projectId, capturedAt])
+  @@index([queueId, capturedAt])
 }
 
 model JobBatch {

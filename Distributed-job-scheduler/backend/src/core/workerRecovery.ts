@@ -30,6 +30,10 @@ export type WorkerRecoveryResult = {
   runningJobsFailed: number;
 };
 
+export type WorkerStatusUpdate = {
+  worker: Worker;
+};
+
 export class WorkerNotFoundError extends Error {
   constructor(workerId: string) {
     super(`Worker ${workerId} was not found.`);
@@ -63,6 +67,7 @@ export class WorkerRecovery {
           "lastHeartbeatAt" = CURRENT_TIMESTAMP,
           "updatedAt" = CURRENT_TIMESTAMP
         WHERE "id" = ${workerId}::uuid
+          AND "status" = 'ONLINE'
         RETURNING *
       `;
       const worker = updatedWorkers[0];
@@ -84,6 +89,22 @@ export class WorkerRecovery {
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
     await publishWorkerEvent(workerId, "worker.heartbeat", { currentJobCount });
     return result;
+  }
+
+  async updateWorkerStatus(workerId: string, status: WorkerStatus): Promise<WorkerStatusUpdate> {
+    const worker = await prisma.worker.update({
+      where: { id: workerId },
+      data: {
+        status,
+        ...(status === WorkerStatus.STOPPED ? { currentJobCount: 0 } : {}),
+        stoppedAt: status === WorkerStatus.STOPPED ? new Date() : null,
+        updatedAt: new Date()
+      }
+    });
+    if (status === WorkerStatus.STOPPED) {
+      await publishWorkerEvent(workerId, "worker.offline");
+    }
+    return { worker };
   }
 
   async recoverStaleWorkers(): Promise<WorkerRecoveryResult[]> {

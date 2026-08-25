@@ -43,6 +43,7 @@ export class RetryProcessor {
           AND "queueId" = ${queueId}::uuid
           AND "status" = 'FAILED'
           AND "attemptCount" < "maxAttempts"
+          AND "attemptCount" < ${policy.maxAttempts}
         RETURNING "id"
       `;
 
@@ -75,10 +76,13 @@ export class RetryProcessor {
           SET
             "status" = 'QUEUED',
             "updatedAt" = CURRENT_TIMESTAMP
-          WHERE "status" = 'RETRY'
-            AND "queueId" = ${queueId}::uuid
-            AND "scheduledAt" <= CURRENT_TIMESTAMP
-          RETURNING "id"
+          FROM "Queue"
+          WHERE "Job"."status" = 'RETRY'
+            AND "Job"."queueId" = ${queueId}::uuid
+            AND "Job"."queueId" = "Queue"."id"
+            AND "Queue"."isPaused" = false
+            AND "Job"."scheduledAt" <= CURRENT_TIMESTAMP
+          RETURNING "Job"."id"
         `;
       }
 
@@ -87,9 +91,12 @@ export class RetryProcessor {
         SET
           "status" = 'QUEUED',
           "updatedAt" = CURRENT_TIMESTAMP
-        WHERE "status" = 'RETRY'
-          AND "scheduledAt" <= CURRENT_TIMESTAMP
-        RETURNING "id"
+          FROM "Queue"
+          WHERE "Job"."status" = 'RETRY'
+            AND "Job"."queueId" = "Queue"."id"
+            AND "Queue"."isPaused" = false
+            AND "Job"."scheduledAt" <= CURRENT_TIMESTAMP
+          RETURNING "Job"."id"
       `;
     }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
