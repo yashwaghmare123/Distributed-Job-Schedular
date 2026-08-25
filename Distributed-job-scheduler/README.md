@@ -203,7 +203,7 @@ See the [ER diagram](docs/ER-DIAGRAM.md) and [database design](docs/02-DATABASE-
 
 `claimNextJob()` runs in a `READ COMMITTED` transaction. It locks the queue row, rejects paused queues, checks active `CLAIMED`/`RUNNING` jobs, selects the highest-priority due `QUEUED` job, and updates it with `status = CLAIMED`, `claimedBy`, and `claimedAt`. The candidate query uses `FOR UPDATE SKIP LOCKED`, so competing workers cannot both receive the same claim result.
 
-​```mermaid
+```mermaid
 sequenceDiagram
     participant A as Worker A
     participant B as Worker B
@@ -212,7 +212,7 @@ sequenceDiagram
     B->>DB: Compete for the same queue
     DB-->>A: Lock acquired, update to CLAIMED
     DB-->>B: Locked row skipped, no claim
-​```
+```
 
 The runtime verifies ownership again before moving the job to `RUNNING` and creating `JobExecution`. See `backend/src/core/jobClaimer.ts` and `backend/src/core/workerRuntime.ts`.
 
