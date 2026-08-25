@@ -40,7 +40,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [online, setOnline] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const { selectedProject, selectedProjectId, setSelectedProjectId } = useSelectedProject();
+  const { selectedProject, selectedProjectId, setSelectedProjectId, loading } = useSelectedProject();
   const isProjectsPage = pathname === "/projects";
   const isProjectEntry = pathname.startsWith("/project/");
   const isControlPlane = !isProjectsPage && (isProjectEntry || Boolean(selectedProject));
@@ -50,6 +50,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       router.replace("/login");
       return;
     }
+    if (loading) return;
     if (!isProjectsPage && !selectedProject && !isProjectEntry) {
       router.replace("/projects");
       return;

@@ -51,12 +51,12 @@ export default function ScheduledPage() {
             <table>
               <thead>
                 <tr>
-                  <th>Schedule</th>
+                  <th>Job type</th>
                   <th>Queue</th>
-                  <th>Cron</th>
-                  <th>Next Run</th>
-                  <th>Last Run</th>
-                  <th>Run Count</th>
+                  <th>Cron schedule</th>
+                  <th>Next execution</th>
+                  <th>Last execution</th>
+                  <th>Runs</th>
                   <th>Status</th>
                 </tr>
               </thead>
@@ -66,11 +66,11 @@ export default function ScheduledPage() {
                     <td>
                       <div>{item.jobType}</div>
                     </td>
-                    <td>{item.queue?.name ?? "Queue"}</td>
+                    <td>{item.queue?.name ?? "Not available"}</td>
                     <td className="mono">{item.cronExpression || "Not available"}</td>
                     <td className="subtle">{formatDate(item.nextRunAt)}</td>
                     <td className="subtle">{formatDate(item.lastRunAt ?? null)}</td>
-                    <td>{typeof item.runCount === "number" ? item.runCount : "Not available"}</td>
+                    <td>{typeof item.runCount === "number" ? item.runCount.toLocaleString() : "Not available"}</td>
                     <td>{item.status ?? (item.enabled ? "Enabled" : "Disabled")}</td>
                   </tr>
                 ))}

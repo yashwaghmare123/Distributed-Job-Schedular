@@ -201,6 +201,8 @@ See the [ER diagram](docs/ER-DIAGRAM.md) and [database design](docs/02-DATABASE-
 
 ## Atomic Job Claiming
 
+## Atomic Job Claiming
+
 `claimNextJob()` runs in a `READ COMMITTED` transaction. It locks the queue row, rejects paused queues, checks active `CLAIMED`/`RUNNING` jobs, selects the highest-priority due `QUEUED` job, and updates it with `status = CLAIMED`, `claimedBy`, and `claimedAt`. The candidate query uses `FOR UPDATE SKIP LOCKED`, so competing workers cannot both receive the same claim result.
 
 ```mermaid
@@ -208,11 +210,13 @@ sequenceDiagram
     participant A as Worker A
     participant B as Worker B
     participant DB as PostgreSQL
-    A->>DB: Lock queue and select due job
-    B->>DB: Compete for the same queue
-    DB-->>A: Lock acquired; update to CLAIMED
-    DB-->>B: Locked row skipped; no claim
-```
+
+    A->>DB: Request job claim
+    B->>DB: Request same job claim
+    DB-->>A: Lock acquired
+    DB-->>A: Job updated to CLAIMED
+    DB-->>B: Locked row skipped
+    DB-->>B: No claim
 
 The runtime verifies ownership again before moving the job to `RUNNING` and creating `JobExecution`. See `backend/src/core/jobClaimer.ts` and `backend/src/core/workerRuntime.ts`.
 
@@ -390,6 +394,42 @@ npm run dev
 Available production scripts are `npm run build` and `npm run start`; linting is `npm run lint`.
 
 Backend variables include `DATABASE_URL`, `REDIS_URL`, `JWT_SECRET`, `PORT`, `DB_POOL_MAX`, `SCHEDULER_POLL_INTERVAL_MS`, `WORKER_POLL_INTERVAL_MS`, `WORKER_CONCURRENCY`, `WORKER_HEARTBEAT_INTERVAL_MS`, and `RATE_LIMIT_*` settings. The frontend reads `NEXT_PUBLIC_API_BASE_URL` and `NEXT_PUBLIC_WS_URL`. Defaults are listed in [Configuration](docs/CONFIGURATION.md).
+
+### Docker Development
+
+The Compose deployment preserves the current process architecture: the `backend` container runs `npm start`, which starts the HTTP API, WebSocket hub, scheduler, retry/DLQ processors, and queue runtime workers. There is intentionally no separate worker service.
+
+Build and start the full local topology:
+
+```bash
+docker compose build
+docker compose up -d
+```
+
+Check services and follow logs:
+
+```bash
+docker compose ps
+docker compose logs -f backend
+docker compose logs -f frontend
+```
+
+Apply the existing Prisma migrations to the Compose PostgreSQL service without resetting data:
+
+```bash
+docker compose exec backend npx prisma migrate deploy
+docker compose exec backend npm run seed
+```
+
+Inside Compose, the backend connects to `postgres:5432` and `redis:6379`. From the host, PostgreSQL remains available at `localhost:5433`, Redis at `localhost:6379`, the backend at `http://localhost:3000`, and the frontend at `http://localhost:3001`.
+
+Stop the application while preserving named volumes:
+
+```bash
+docker compose down
+```
+
+Do not use `docker compose down -v` for normal development because it deletes the persistent PostgreSQL and Redis volumes.
 
 ## Project Structure
 

@@ -6,6 +6,7 @@ import { HttpError } from "../lib/errors.js";
 import { parseRequest, parseQueryPagination } from "../lib/validation.js";
 import { requireAuth } from "../middleware/auth.js";
 import { createJobBatch, type JobBatchItem } from "../../core/jobBatchCreator.js";
+import { getJobHandlerDefinitions } from "../../core/jobHandlers.js";
 import { RetryProcessor } from "../../core/retryProcessor.js";
 import { Scheduler } from "../../core/scheduler.js";
 import { WorkerRecovery } from "../../core/workerRecovery.js";
@@ -17,6 +18,17 @@ const router = Router();
 const retryProcessor = new RetryProcessor();
 const scheduler = new Scheduler();
 const workerRecovery = new WorkerRecovery();
+
+function getValidJobTypes(): Set<string> {
+  return new Set(getJobHandlerDefinitions().map((definition) => definition.type));
+}
+
+function validateJobType(jobType: string): void {
+  const validTypes = getValidJobTypes();
+  if (!validTypes.has(jobType)) {
+    throw new HttpError(400, "UNSUPPORTED_JOB_TYPE", `Job type '${jobType}' is not registered. Supported types: ${Array.from(validTypes).sort().join(", ")}`);
+  }
+}
 
 const defaultRetryPolicies = [
   { name: "seed-fixed", strategy: RetryStrategy.FIXED, maxAttempts: 3, initialDelayMs: 5000, maxDelayMs: 30000, backoffMultiplier: new Prisma.Decimal("1"), jitter: false },
@@ -108,6 +120,15 @@ function isJobIdempotencyConflict(error: unknown): boolean {
   return error.meta?.modelName === "Job" && /queueId.*idempotencyKey|idempotencyKey.*queueId/.test(error.message);
 }
 
+function isQueueNameConflict(error: unknown): boolean {
+  if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") {
+    return false;
+  }
+
+  const target = Array.isArray(error.meta?.target) ? error.meta.target : [];
+  return target.includes("projectId") && target.includes("name");
+}
+
 router.get("/projects/:projectId/queues", readRateLimit, async (request, response, next) => {
   try {
     const projectId = asUuid(request.params.projectId, "projectId");
@@ -148,19 +169,38 @@ router.post("/projects/:projectId/queues", writeRateLimit, async (request, respo
     const retryPolicy = await prisma.retryPolicy.findUnique({ where: { id: body.retryPolicyId } });
     if (!retryPolicy) throw new HttpError(404, "NOT_FOUND", "Retry policy not found.");
 
-    const queue = await prisma.queue.create({
-      data: {
+    const normalizedName = body.name.trim();
+    const existingQueue = await prisma.queue.findFirst({
+      where: {
         projectId,
-        name: body.name,
-        description: body.description ?? null,
-        defaultPriority: body.defaultPriority ?? 0,
-        concurrencyLimit: body.concurrencyLimit,
-        isPaused: body.isPaused ?? false,
-        retryPolicyId: body.retryPolicyId
-      }
+        name: { equals: normalizedName, mode: "insensitive" }
+      },
+      select: { id: true }
     });
+    if (existingQueue) {
+      throw new HttpError(409, "CONFLICT", "A queue with this name already exists in this project.");
+    }
 
-    response.status(201).json(queue);
+    try {
+      const queue = await prisma.queue.create({
+        data: {
+          projectId,
+          name: normalizedName,
+          description: body.description ?? null,
+          defaultPriority: body.defaultPriority ?? 0,
+          concurrencyLimit: body.concurrencyLimit,
+          isPaused: body.isPaused ?? false,
+          retryPolicyId: body.retryPolicyId
+        }
+      });
+
+      response.status(201).json(queue);
+    } catch (error) {
+      if (isQueueNameConflict(error)) {
+        throw new HttpError(409, "CONFLICT", "A queue with this name already exists in this project.");
+      }
+      throw error;
+    }
   } catch (error) {
     next(error);
   }
@@ -285,6 +325,8 @@ router.post("/queues/:id/jobs", writeRateLimit, async (request, response, next) 
     if (!member) throw new HttpError(403, "FORBIDDEN", "You do not have access to this queue.");
 
     const body = parseRequest(jobCreateSchema, request.body, "Invalid job request");
+    validateJobType(body.jobType);
+    
     const idempotencyKey = Array.isArray(request.headers["idempotency-key"]) ? request.headers["idempotency-key"][0] : request.headers["idempotency-key"] ?? body.idempotencyKey;
     const scheduledAt = body.scheduledAt ? new Date(body.scheduledAt) : new Date();
     const status = scheduledAt.getTime() > Date.now() ? JobStatus.SCHEDULED : JobStatus.QUEUED;
@@ -338,7 +380,14 @@ router.post("/queues/:id/jobs/batch", batchRateLimit, async (request, response, 
     if (!member) throw new HttpError(403, "FORBIDDEN", "You do not have access to this queue.");
 
     const body = parseRequest(z.object({ jobs: z.array(batchJobSchema).min(1) }), request.body, "Invalid batch request");
-    const batch = await createJobBatch(queueId, normalizeBatchJobs(body.jobs as Array<Record<string, unknown>>));
+    
+    // Validate all job types before creating the batch
+    const normalizedJobs = normalizeBatchJobs(body.jobs as Array<Record<string, unknown>>);
+    for (const job of normalizedJobs) {
+      validateJobType(job.jobType);
+    }
+    
+    const batch = await createJobBatch(queueId, normalizedJobs);
     for (const job of batch.jobs) {
       await publishJobStateEvent(job.id, job.status === "SCHEDULED" ? "job.scheduled" : "job.queued", job.status);
     }
@@ -394,6 +443,8 @@ router.post("/queues/:id/scheduled-jobs", writeRateLimit, async (request, respon
     if (!member) throw new HttpError(403, "FORBIDDEN", "You do not have access to this queue.");
 
     const body = parseRequest(scheduledJobCreateSchema, request.body, "Invalid recurring schedule request");
+    validateJobType(body.jobType);
+    
     const nextRunAt = body.nextRunAt ? new Date(body.nextRunAt) : new Date(Date.now() + 60_000);
     const scheduledJob = await scheduler.createScheduledJob({
       queueId,

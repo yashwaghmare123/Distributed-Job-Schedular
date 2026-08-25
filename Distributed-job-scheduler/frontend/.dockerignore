@@ -1,0 +1,13 @@
+node_modules
+.next
+.env
+.env.*
+.git
+*.log
+coverage
+*.tsbuildinfo
+.vscode
+.idea
+.agents
+.claude
+.windsurf

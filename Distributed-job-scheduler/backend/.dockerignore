@@ -1,0 +1,15 @@
+node_modules
+.env
+.env.*
+.git
+*.log
+coverage
+*.tsbuildinfo
+api-regression-output.txt
+tsc_errors.txt
+.vscode
+.idea
+.agents
+.claude
+.windsurf
+.next

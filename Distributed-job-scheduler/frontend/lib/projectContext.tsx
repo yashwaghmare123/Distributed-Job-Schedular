@@ -35,7 +35,11 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
   };
 
   useEffect(() => {
-    void refreshProjects();
+    if (typeof window === "undefined") return;
+    const storedProjectId = window.sessionStorage.getItem("scheduler.projectId");
+    if (storedProjectId) {
+      setSelectedProjectId(storedProjectId);
+    }
   }, []);
 
   useEffect(() => {
@@ -46,6 +50,10 @@ export function ProjectProvider({ children }: { children: React.ReactNode }) {
       window.sessionStorage.removeItem("scheduler.projectId");
     }
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    void refreshProjects();
+  }, []);
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
