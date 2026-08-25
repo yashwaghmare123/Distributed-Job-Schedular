@@ -24,8 +24,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: backend/package-lock.json
 
       - name: Install backend dependencies
         working-directory: backend
@@ -34,6 +32,8 @@ jobs:
       - name: Generate Prisma Client
         working-directory: backend
         run: npx prisma generate
+        env:
+          DATABASE_URL: postgresql://scheduler:scheduler_password@localhost:5432/job_scheduler?schema=public
 
       - name: Type check backend
         working-directory: backend
@@ -42,7 +42,6 @@ jobs:
       - name: Run backend tests
         working-directory: backend
         run: npm test
-
 
   frontend:
     name: Frontend CI
@@ -56,8 +55,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
 
       - name: Install frontend dependencies
         working-directory: frontend
@@ -73,7 +70,6 @@ jobs:
           NEXT_PUBLIC_API_BASE_URL: http://localhost:5000
           NEXT_PUBLIC_WS_URL: ws://localhost:5000/ws
         run: npm run build
-
 
   docker:
     name: Docker Build
