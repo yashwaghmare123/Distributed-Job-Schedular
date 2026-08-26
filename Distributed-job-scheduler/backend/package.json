@@ -4,7 +4,7 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "node --test --test-concurrency=1 --import tsx src/**/*.test.ts src/zzzz-teardown.test.ts",
+    "test": "node --test --test-concurrency=1 --import tsx --import ./src/test/setup.ts src/**/*.test.ts",
     "seed": "prisma db seed",
     "dev": "npx tsx --watch src/server.ts",
     "start": "npx tsx src/server.ts"

@@ -75,7 +75,7 @@ test("Redis is reachable as coordination infrastructure and does not hold Job st
 });
 
 test("Redis-unavailable connections fail without changing PostgreSQL state", async () => {
-  const unavailable = (await import("redis")).createClient({ url: "redis://127.0.0.1:6399" });
+  const unavailable = (await import("redis")).createClient({ url: "redis://127.0.0.1:6399", socket: { reconnectStrategy: false } });
   await assert.rejects(() => unavailable.connect());
   await unavailable.disconnect();
   assert.equal(await prisma.job.count({ where: { jobType: "gapfill-redis-probe" } }), 0);

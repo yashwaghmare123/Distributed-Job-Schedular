@@ -1,17 +1,22 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { JobStatus, WorkerStatus } from "@prisma/client";
 import { createApp } from "./index.js";
 import { prisma } from "../lib/prisma.js";
 import { redis } from "../lib/redis.js";
-
 const app = createApp();
 app.set("trust proxy", true);
 
 type Account = { userId: string; organizationId: string; email: string; token: string; refreshToken: string };
 type Fixture = Account & { other: Account; projectId: string; queueId: string; workerId: string };
 let fixtureNumber = 0;
+
+function uniqueTestIp(): string {
+  const timestampPart = Date.now() % 65_536;
+  const randomPart = Math.floor(Math.random() * 65_536);
+  return `2001:db8:${timestampPart.toString(16)}:${randomPart.toString(16)}::1`;
+}
 
 async function register(name: string, email: string, password: string, testIp: string): Promise<Account> {
   const response = await request(app).post("/auth/register").set("X-Forwarded-For", testIp).send({ name, email, password });
@@ -32,11 +37,10 @@ function auth(account: Account) {
 
 async function createFixture(): Promise<Fixture> {
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  const fixtureIpBase = 10 + fixtureNumber * 2;
   fixtureNumber += 1;
   console.log("FIXTURE_START", suffix);
-  const account = await register("Step 12 Owner", `step12-owner-${suffix}@example.test`, "Step12-password", `198.51.100.${fixtureIpBase}`);
-  const other = await register("Other Tenant", `step12-other-${suffix}@example.test`, "Step12-password", `198.51.100.${fixtureIpBase + 1}`);
+  const account = await register("Step 12 Owner", `step12-owner-${suffix}@example.test`, "Step12-password", uniqueTestIp());
+  const other = await register("Other Tenant", `step12-other-${suffix}@example.test`, "Step12-password", uniqueTestIp());
   const projectResponse = await request(app).post("/projects").set(auth(account)).send({ name: `Step12 Project ${suffix}`, description: "API test fixture" });
   assert.equal(projectResponse.status, 201);
   console.log("FIXTURE_PROJECT", projectResponse.status, projectResponse.body);
@@ -80,7 +84,7 @@ async function cleanupFixture(fixture: Fixture) {
 }
 
 test("retry policies are backfilled when none are configured", async () => {
-  const account = await register("Retry Policy Owner", `retry-policy-${Date.now()}@example.test`, "Retry-password", "198.51.100.120");
+  const account = await register("Retry Policy Owner", `retry-policy-${Date.now()}@example.test`, "Retry-password", uniqueTestIp());
   try {
     const projectRows = await prisma.project.findMany({ where: { organizationId: account.organizationId }, select: { id: true } });
     const projectIds = projectRows.map((project) => project.id);
@@ -270,5 +274,4 @@ test("worker and DLQ resource authorization is tenant-isolated", async () => {
     await cleanupFixture(fixture);
   }
 });
-
 

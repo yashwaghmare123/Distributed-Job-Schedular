@@ -120,7 +120,7 @@ test("health remains available and rejected mutations do not execute the route",
 });
 
 test("Redis failure fails open for rate limiting without bypassing upstream authentication", async () => {
-  const unavailable = (await import("redis")).createClient({ url: "redis://127.0.0.1:6399" });
+  const unavailable = (await import("redis")).createClient({ url: "redis://127.0.0.1:6399", socket: { reconnectStrategy: false } });
   const protectedApp = express();
   protectedApp.use((request: express.Request, _response: express.Response, next: express.NextFunction) => request.headers.authorization === "Bearer valid" ? next() : next(new Error("unauthorized")));
   protectedApp.get("/protected", createRateLimiter(policy, unavailable), (_request, response) => response.json({ ok: true }));

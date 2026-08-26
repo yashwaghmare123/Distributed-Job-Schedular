@@ -26,8 +26,9 @@ test("health and readiness endpoints report service state", async () => {
   assert.deepEqual(health.body, { status: "ok" });
 
   const ready = await request(app).get("/ready");
-  assert.equal(ready.status, 200);
-  assert.equal(ready.body.status, "ok");
+  assert.equal(ready.status, 503);
+  assert.equal(ready.body.status, "error");
+  assert.equal(ready.body.websocket, "not_configured");
 });
 
 test("readiness reports dependency failures without exposing secrets", async () => {

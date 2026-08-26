@@ -166,7 +166,8 @@ function isJobIdempotencyConflict(error: unknown): boolean {
     return false;
   }
 
-  return error.meta?.modelName === "Job" && /queueId.*idempotencyKey|idempotencyKey.*queueId/.test(error.message);
+  const target = Array.isArray(error.meta?.target) ? error.meta.target : [];
+  return (target.includes("queueId") && target.includes("idempotencyKey")) || /queueId.*idempotencyKey|idempotencyKey.*queueId/.test(error.message);
 }
 
 function isQueueNameConflict(error: unknown): boolean {

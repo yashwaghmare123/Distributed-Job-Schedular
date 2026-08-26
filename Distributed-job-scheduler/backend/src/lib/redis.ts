@@ -12,3 +12,9 @@ export async function pingRedis(): Promise<string> {
   if (!redis.isOpen) await redis.connect();
   return redis.ping();
 }
+
+export async function disconnectRedis(): Promise<void> {
+  if (redis.isOpen) {
+    await redis.quit();
+  }
+}
