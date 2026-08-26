@@ -74,6 +74,7 @@ jobs:
 
       - name: Run backend tests
         working-directory: Distributed-job-scheduler/backend
+        timeout-minutes: 10
         run: npm test
 
   frontend:

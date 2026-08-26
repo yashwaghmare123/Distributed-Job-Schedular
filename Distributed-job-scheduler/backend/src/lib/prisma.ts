@@ -23,3 +23,15 @@ const pool = new pg.Pool({
 const adapter = new PrismaPg(pool);
 
 export const prisma = new PrismaClient({ adapter });
+
+let disconnectPromise: Promise<void> | null = null;
+
+export function disconnectDatabase(): Promise<void> {
+  if (!disconnectPromise) {
+    disconnectPromise = (async () => {
+      await prisma.$disconnect();
+      await pool.end();
+    })();
+  }
+  return disconnectPromise;
+}

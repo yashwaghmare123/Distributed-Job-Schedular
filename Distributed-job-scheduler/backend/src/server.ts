@@ -1,7 +1,7 @@
 import { pathToFileURL } from "node:url";
 import type { Server as HttpServer } from "node:http";
 import { JobStatus, WorkerStatus } from "@prisma/client";
-import { prisma } from "./lib/prisma.js";
+import { disconnectDatabase, prisma } from "./lib/prisma.js";
 import { createApp } from "./api/index.js";
 import { WebSocketHub } from "./events/websocketHub.js";
 import { Scheduler } from "./core/scheduler.js";
@@ -240,23 +240,27 @@ export async function startRuntimeBootstrap(options: RuntimeBootstrapOptions = {
         console.error("Failed to disconnect Redis during shutdown.", error);
       }
 
-      await prisma.$disconnect();
+      process.removeListener("SIGINT", onSigint);
+      process.removeListener("SIGTERM", onSigterm);
+      await disconnectDatabase();
       console.log("Application shutdown complete.");
     })();
 
     return shutdownPromise;
   };
 
-  process.once("SIGINT", () => {
+  const onSigint = () => {
     void shutdown("SIGINT").finally(() => process.exit(0));
-  });
-  process.once("SIGTERM", () => {
+  };
+  const onSigterm = () => {
     void shutdown("SIGTERM").finally(() => process.exit(0));
-  });
+  };
+  process.once("SIGINT", onSigint);
+  process.once("SIGTERM", onSigterm);
 
   server.on("error", (error: NodeJS.ErrnoException) => {
     console.error("Backend failed to start.", error);
-    void prisma.$disconnect().finally(() => process.exit(1));
+    void disconnectDatabase().finally(() => process.exit(1));
   });
 
   return { server, shutdown };
