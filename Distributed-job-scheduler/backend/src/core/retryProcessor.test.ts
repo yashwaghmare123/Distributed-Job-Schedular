@@ -244,3 +244,21 @@ test("concurrent retry scheduling is conditional and produces one retry state", 
     assert.equal(persisted.executions.length, 1);
   } finally { await cleanup(context); }
 });
+
+test("jittered backoff stays in safe integer millisecond values", () => {
+  const originalRandom = Math.random;
+  Math.random = () => 0.1;
+  try {
+    const policy = {
+      strategy: RetryStrategy.EXPONENTIAL,
+      initialDelayMs: 1,
+      maxDelayMs: 128,
+      backoffMultiplier: new Prisma.Decimal("2"),
+      jitter: true
+    };
+
+    assert.equal(calculateRetryDelay(policy, 2), 1);
+  } finally {
+    Math.random = originalRandom;
+  }
+});

@@ -157,8 +157,12 @@ export function calculateRetryDelay(policy: Pick<RetryPolicy, "strategy" | "init
   const jitteredDelay = policy.jitter
     ? cappedDelay.mul(new Prisma.Decimal(0.5 + Math.random()))
     : cappedDelay;
-  const finalDelay = jitteredDelay.lessThan(policy.maxDelayMs) ? jitteredDelay : new Prisma.Decimal(policy.maxDelayMs);
-  const delayNumber = finalDelay.toNumber();
+
+  const delayNumber = Math.min(
+    policy.maxDelayMs,
+    Math.max(0, Math.round(jitteredDelay.toNumber()))
+  );
+
   if (!Number.isSafeInteger(delayNumber) || delayNumber < 0) {
     throw new Error("Retry delay must be a non-negative safe integer number of milliseconds.");
   }

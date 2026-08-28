@@ -131,6 +131,5 @@ test("Redis failure fails open for rate limiting without bypassing upstream auth
 });
 
 after(async () => {
-  await clearKeys();
-  if (client.isOpen) await client.disconnect();
+  if (client.isOpen) await clearKeys();
 });
