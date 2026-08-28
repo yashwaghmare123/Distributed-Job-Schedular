@@ -50,6 +50,12 @@ function NewJobForm() {
   const [cronExpression, setCronExpression] = useState("0 * * * *");
   const [delaySeconds, setDelaySeconds] = useState("60");
 
+  const getErrorMessage = (err: unknown, fallback: string) => {
+    if (err instanceof Error && err.message) return err.message;
+    if (typeof err === "string" && err.trim()) return err;
+    return fallback;
+  };
+
   useEffect(() => {
     if (mode === "delayed" || mode === "scheduled" || mode === "recurring") {
       setExecutionType(mode);
@@ -69,17 +75,24 @@ function NewJobForm() {
           apiClient.jobHandlers()
         ]);
         setQueues(availableQueues);
-        setSelectedQueueId((current) => current && availableQueues.some((queue) => queue.id === current)
-          ? current
-          : availableQueues[0]?.id ?? "");
+        setSelectedQueueId((current) => {
+          if (current && availableQueues.some((queue) => queue.id === current)) return current;
+          return availableQueues[0]?.id ?? "";
+        });
         setHandlers(availableHandlers.data);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Unable to load job capabilities");
+        setError(getErrorMessage(err, "Unable to load job capabilities"));
       }
     };
     void loadQueues();
     return () => { unsubscribeStatus(); };
   }, [mode, selectedProject]);
+
+  useEffect(() => {
+    if (!selectedQueueId && queues.length) {
+      setSelectedQueueId(queues[0].id);
+    }
+  }, [queues, selectedQueueId]);
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -125,7 +138,7 @@ function NewJobForm() {
         setMessage(`Recurring schedule created for ${scheduledJob.jobType}.`);
         setTimeout(() => router.push(`/scheduled`), 600);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Unable to create recurring schedule");
+        setError(getErrorMessage(err, "Unable to create recurring schedule"));
       }
       return;
     }
@@ -161,7 +174,7 @@ function NewJobForm() {
       setMessage(`Job created for ${job.jobType}.`);
       setTimeout(() => router.push(`/jobs/${job.id}`), 600);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to create job");
+      setError(getErrorMessage(err, "Unable to create job"));
     }
   };
 
