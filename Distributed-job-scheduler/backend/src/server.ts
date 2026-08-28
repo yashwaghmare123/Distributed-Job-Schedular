@@ -83,7 +83,7 @@ async function ensureQueueWorker(queueId: string, workerConcurrency: number): Pr
 export async function startRuntimeBootstrap(options: RuntimeBootstrapOptions = {}): Promise<RuntimeBootstrapHandle> {
   const configuredPort = getConfiguredPort(options.port);
   const app = options.app ?? createApp();
-  const server = app.listen(configuredPort, () => {
+  const server = app.listen(configuredPort,"0.0.0.0", () => {
     console.log(`HTTP server started on port ${configuredPort}`);
   });
 
