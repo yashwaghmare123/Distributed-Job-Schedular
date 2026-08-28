@@ -4,8 +4,6 @@ import { assertValidTransition } from "./jobStateMachine.js";
 import { claimNextJob } from "./jobClaimer.js";
 import { publishJobStateEvent } from "../events/eventBus.js";
 import { WorkerRecovery } from "./workerRecovery.js";
-import { RetryProcessor } from "./retryProcessor.js";
-import { DeadLetterProcessor } from "./deadLetterProcessor.js";
 
 export type JobExecutionResult = {
   ok: boolean;
@@ -57,8 +55,6 @@ export class WorkerRuntime {
   readonly concurrency: number;
   private readonly handler: JobHandler;
   private readonly recovery = new WorkerRecovery();
-  private readonly retryProcessor = new RetryProcessor();
-  private readonly deadLetterProcessor = new DeadLetterProcessor();
   private readonly activeJobs = new Set<Promise<unknown>>();
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private running = false;
@@ -341,11 +337,6 @@ export class WorkerRuntime {
           metadata: { jobId: job.id, queueId: this.queueId, workerId: this.workerId, error: message, errorCode }
         }
       });
-
-      const retry = await this.retryProcessor.scheduleFailedJob(job.id, this.queueId);
-      if (!retry.scheduled) {
-        await this.deadLetterProcessor.processDeadLetter(job.id, this.queueId);
-      }
 
       return result;
     }

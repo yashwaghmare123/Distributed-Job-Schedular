@@ -127,7 +127,10 @@ test("Redis failure fails open for rate limiting without bypassing upstream auth
   protectedApp.use((_error: unknown, _request: express.Request, response: express.Response, _next: express.NextFunction) => response.status(401).json({ error: { code: "UNAUTHORIZED" } }));
   assert.equal((await request(protectedApp).get("/protected")).status, 401);
   assert.equal((await request(protectedApp).get("/protected").set("Authorization", "Bearer valid")).status, 200);
-  await unavailable.disconnect();
+  if (unavailable.isOpen) await unavailable.disconnect();
 });
 
-after(async () => { await clearKeys(); });
+after(async () => {
+  await clearKeys();
+  if (client.isOpen) await client.disconnect();
+});

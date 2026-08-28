@@ -30,7 +30,6 @@ export function disconnectDatabase(): Promise<void> {
   if (!disconnectPromise) {
     disconnectPromise = (async () => {
       await prisma.$disconnect();
-      await pool.end();
     })();
   }
   return disconnectPromise;

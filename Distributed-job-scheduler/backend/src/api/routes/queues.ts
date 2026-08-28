@@ -23,10 +23,13 @@ function getValidJobTypes(): Set<string> {
   return new Set(getJobHandlerDefinitions().map((definition) => definition.type));
 }
 
-async function validateJobType(projectId: string, jobType: string): Promise<void> {
-  const validTypes = getValidJobTypes();
-  if (!validTypes.has(jobType) && !(await prisma.projectJobType.findUnique({ where: { projectId_jobType: { projectId, jobType } }, select: { id: true } }))) {
-    throw new HttpError(400, "UNSUPPORTED_JOB_TYPE", `Job type '${jobType}' is not registered. Supported types: ${Array.from(validTypes).sort().join(", ")}`);
+async function validateJobType(_projectId: string, jobType: string): Promise<void> {
+  const normalized = jobType.trim();
+  if (!normalized) {
+    throw new HttpError(400, "VALIDATION_ERROR", "Job type is required.");
+  }
+  if (normalized !== jobType) {
+    throw new HttpError(400, "VALIDATION_ERROR", "Job type contains leading or trailing whitespace.");
   }
 }
 

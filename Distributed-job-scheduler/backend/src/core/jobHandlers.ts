@@ -114,7 +114,7 @@ export function getJobHandlerDefinitions() {
 export function resolveJobHandler(jobType: string): JobHandler {
   const definition = handlerMap.get(jobType);
   if (!definition) {
-    return async (job) => failed(job, "UNSUPPORTED_JOB_TYPE", `No handler is registered for job type '${jobType}'.`);
+    return customHandler;
   }
   return definition.handler;
 }

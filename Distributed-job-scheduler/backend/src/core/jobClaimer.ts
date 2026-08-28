@@ -47,12 +47,6 @@ export async function claimNextJob(workerId: string, queueId: string) {
             "scheduledAt" IS NULL
             OR "scheduledAt" <= CURRENT_TIMESTAMP
           )
-          AND (
-            SELECT COUNT(*)
-            FROM "Job" AS active
-            WHERE active."queueId" = "Job"."queueId"
-              AND active."status" IN ('CLAIMED', 'RUNNING')
-          ) < ${queue.concurrencyLimit}
         ORDER BY "priority" DESC, "createdAt" ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED

@@ -63,7 +63,7 @@ async function cleanupFixture(fixture: Fixture) {
   const queueIds = queueRows.map((queue) => queue.id);
   const jobRows = await prisma.job.findMany({ where: { queueId: { in: queueIds } }, select: { id: true } });
   const jobIds = jobRows.map((job) => job.id);
-  const workerRows = await prisma.worker.findMany({ where: { organizationId: { in: organizationIds }, name: { startsWith: "step12-worker-" } }, select: { id: true } });
+  const workerRows = await prisma.worker.findMany({ where: { organizationId: { in: organizationIds } }, select: { id: true } });
   const workerIds = workerRows.map((worker) => worker.id);
 
   await prisma.jobLog.deleteMany({ where: { execution: { jobId: { in: jobIds } } } });
@@ -75,7 +75,7 @@ async function cleanupFixture(fixture: Fixture) {
   await prisma.queueDepthSnapshot.deleteMany({ where: { queueId: { in: queueIds } } });
   await prisma.projectJobType.deleteMany({ where: { projectId: { in: projectIds } } });
   await prisma.workerHeartbeat.deleteMany({ where: { workerId: { in: workerIds } } });
-  await prisma.worker.deleteMany({ where: { id: { in: workerIds } } });
+  await prisma.worker.deleteMany({ where: { organizationId: { in: organizationIds } } });
   await prisma.queue.deleteMany({ where: { id: { in: queueIds } } });
   await prisma.project.deleteMany({ where: { id: { in: projectIds } } });
   await prisma.organizationMember.deleteMany({ where: { organizationId: { in: organizationIds } } });

@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  backend:
+    name: Backend CI
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: scheduler
+          POSTGRES_PASSWORD: scheduler_password
+          POSTGRES_DB: job_scheduler
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U scheduler -d job_scheduler"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://scheduler:scheduler_password@localhost:5432/job_scheduler?schema=public
+      REDIS_URL: redis://localhost:6379
+      JWT_SECRET: ci-test-secret
+      PORT: 5000
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Distributed-job-scheduler/backend/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: Distributed-job-scheduler/backend
+        run: npm ci
+
+      - name: Generate Prisma Client
+        working-directory: Distributed-job-scheduler/backend
+        run: npx prisma generate
+
+      - name: Apply database migrations
+        working-directory: Distributed-job-scheduler/backend
+        run: npx prisma migrate deploy
+
+      - name: Type check backend
+        working-directory: Distributed-job-scheduler/backend
+        run: npx tsc --noEmit
+
+      - name: Run backend tests
+        working-directory: Distributed-job-scheduler/backend
+        timeout-minutes: 10
+        run: npm test
+
+  frontend:
+    name: Frontend CI
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: Distributed-job-scheduler/frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: Distributed-job-scheduler/frontend
+        run: npm ci
+
+      - name: Run frontend tests
+        working-directory: Distributed-job-scheduler/frontend
+        timeout-minutes: 10
+        run: npm test
+
+      - name: Production build
+        working-directory: Distributed-job-scheduler/frontend
+        env:
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:5000
+          NEXT_PUBLIC_WS_URL: ws://localhost:5000/ws
+        run: npm run build
+
+  docker:
+    name: Docker Build
+    runs-on: ubuntu-latest
+
+    needs:
+      - backend
+      - frontend
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Docker images
+        working-directory: Distributed-job-scheduler
+        run: docker compose build
