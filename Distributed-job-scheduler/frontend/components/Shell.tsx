@@ -40,6 +40,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [online, setOnline] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [authReady, setAuthReady] = useState(false);
   const { selectedProject, selectedProjectId, setSelectedProjectId, loading } = useSelectedProject();
   const isProjectsPage = pathname === "/projects";
   const isProjectEntry = pathname.startsWith("/project/");
@@ -47,7 +49,19 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let active = true;
-    void (apiClient.session?.() ?? Promise.reject(new Error("Authentication required."))).catch(() => { if (active) router.replace("/login"); });
+    void (apiClient.session?.() ?? Promise.reject(new Error("Authentication required.")))
+      .then(() => {
+        if (active) setIsAuthenticated(true);
+      })
+      .catch(() => {
+        if (active) {
+          setIsAuthenticated(false);
+          router.replace("/login");
+        }
+      })
+      .finally(() => {
+        if (active) setAuthReady(true);
+      });
     if (loading) return;
     if (!isProjectsPage && !selectedProject && !isProjectEntry) {
       router.replace("/projects");
@@ -61,7 +75,11 @@ export function Shell({ children }: { children: React.ReactNode }) {
       unsubscribe();
       window.clearInterval(timer);
     };
-  }, [isProjectEntry, isProjectsPage, router, selectedProject]);
+  }, [isProjectEntry, isProjectsPage, router, selectedProject, loading]);
+
+  if (!authReady || !isAuthenticated) {
+    return null;
+  }
 
   const logout = () => {
     void (apiClient.logout?.() ?? Promise.resolve()).catch(() => undefined);
