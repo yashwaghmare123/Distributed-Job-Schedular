@@ -49,19 +49,31 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let active = true;
-    void (apiClient.session?.() ?? Promise.reject(new Error("Authentication required.")))
-      .then(() => {
-        if (active) setIsAuthenticated(true);
-      })
+    const hasStoredSession = typeof window !== "undefined" && Boolean(window.sessionStorage.getItem("scheduler.access"));
+
+    if (!hasStoredSession) {
+      setIsAuthenticated(false);
+      setAuthReady(true);
+      router.replace("/login");
+      return;
+    }
+
+    setIsAuthenticated(true);
+    setAuthReady(true);
+
+    if (typeof apiClient.session !== "function") return;
+
+    void apiClient.session()
       .catch(() => {
-        if (active) {
-          setIsAuthenticated(false);
-          router.replace("/login");
-        }
-      })
-      .finally(() => {
-        if (active) setAuthReady(true);
+        if (!active) return;
+        setIsAuthenticated(false);
+        setAuthReady(true);
+        router.replace("/login");
       });
+
+    return () => {
+      active = false;
+    };
     if (loading) return;
     if (!isProjectsPage && !selectedProject && !isProjectEntry) {
       router.replace("/projects");
